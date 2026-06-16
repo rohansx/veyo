@@ -6,7 +6,7 @@ Cargo.lock
 
 # Local tooling caches (not part of the project)
 /.illuminate/
-/.fastembed_cache/
+**/.fastembed_cache/
 
 # veyo runtime: local-only thumbnail cache / recorded eval sessions are large
 /fixtures/sessions/**/frames/
