@@ -1,6 +1,6 @@
 [package]
-name = "veyo-mcp"
-description = "MCP server that streams veyo deltas to LLM agents"
+name = "veyo-store"
+description = "SQLite-backed append-only event store for veyo deltas"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,11 +12,5 @@ veyo-core = { path = "../veyo-core" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+rusqlite = { workspace = true }
 tracing = { workspace = true }
-rmcp = { workspace = true }
-schemars = { workspace = true }
-veyo-store = { path = "../veyo-store", optional = true }
-
-[features]
-persist = ["veyo-store"]

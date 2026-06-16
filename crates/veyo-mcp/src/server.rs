@@ -1,4 +1,4 @@
-use crate::store::EventStore;
+use crate::store::EventStore as MemStore;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -8,8 +8,11 @@ use rmcp::{
 };
 use serde::Deserialize;
 
+#[cfg(feature = "persist")]
+use veyo_store::{EventStore as SqlStore, QueryParams};
+
 // ---------------------------------------------------------------------------
-// Tool parameter types (JSON Schema derived for rmcp)
+// Tool parameter types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -26,48 +29,107 @@ struct GetLatestParams {
     count: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct QueryEventsParams {
+    /// Only events with t_event >= this value (epoch-ms).
+    since_ms: Option<u64>,
+    /// Only events with t_event <= this value (epoch-ms).
+    until_ms: Option<u64>,
+    /// Filter by event kind: "RegionChange" or "StateSettle".
+    kind: Option<String>,
+    /// Filter by surface id (e.g. "win_42").
+    surface_id: Option<String>,
+    /// Max events to return (default 100).
+    limit: Option<usize>,
+}
+
 // ---------------------------------------------------------------------------
 // MCP handler
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct VeyoHandler {
-    store: EventStore,
+    mem: MemStore,
+    #[cfg(feature = "persist")]
+    sql: Option<SqlStore>,
     #[allow(dead_code)]
     tool_router: ToolRouter<VeyoHandler>,
 }
 
 #[tool_router]
 impl VeyoHandler {
-    pub fn new(store: EventStore) -> Self {
+    #[cfg(not(feature = "persist"))]
+    pub fn new(mem: MemStore) -> Self {
         Self {
-            store,
+            mem,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    #[cfg(feature = "persist")]
+    pub fn new(mem: MemStore, sql: Option<SqlStore>) -> Self {
+        Self {
+            mem,
+            sql,
             tool_router: Self::tool_router(),
         }
     }
 
     /// Return screen-change deltas with t_event >= since_ms (epoch-ms).
-    ///
-    /// Deltas are semantic descriptions of screen activity — never raw pixels.
-    /// Filter by `since_ms` to poll only new events since your last call.
-    #[tool(
-        description = "Return veyo screen-change events since a given epoch-ms timestamp. Deltas are semantic text, not images."
-    )]
+    /// Deltas are semantic text, never raw pixels. Poll this with your last
+    /// known timestamp to receive only new events.
+    #[tool(description = "Return veyo screen-change events since a given epoch-ms timestamp.")]
     fn get_events(
         &self,
         Parameters(GetEventsParams { since_ms, limit }): Parameters<GetEventsParams>,
     ) -> String {
-        let events = self.store.since(since_ms.unwrap_or(0), limit);
+        let events = self.mem.since(since_ms.unwrap_or(0), limit);
         serde_json::to_string_pretty(&events).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
-    /// Return the N most recent screen-change deltas regardless of time.
+    /// Return the N most recent screen-change deltas (from the in-memory buffer).
     #[tool(description = "Return the N most recent veyo screen-change events.")]
     fn get_latest_events(
         &self,
         Parameters(GetLatestParams { count }): Parameters<GetLatestParams>,
     ) -> String {
-        let events = self.store.latest(count.unwrap_or(20));
+        let events = self.mem.latest(count.unwrap_or(20));
+        serde_json::to_string_pretty(&events).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    /// Query historical events from the persistent SQLite store.
+    /// Requires veyod to be started with --store-path. Falls back to the
+    /// in-memory buffer when no store is attached.
+    #[tool(
+        description = "Query historical veyo events by time range, kind, or surface. Requires --store-path."
+    )]
+    fn query_events(
+        &self,
+        Parameters(QueryEventsParams {
+            since_ms,
+            until_ms,
+            kind,
+            surface_id,
+            limit,
+        }): Parameters<QueryEventsParams>,
+    ) -> String {
+        #[cfg(feature = "persist")]
+        if let Some(ref sql) = self.sql {
+            let params = QueryParams {
+                since: since_ms,
+                until: until_ms,
+                kind,
+                surface_id,
+                limit: limit.or(Some(100)),
+            };
+            return match sql.query(&params) {
+                Ok(events) => serde_json::to_string_pretty(&events)
+                    .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+                Err(e) => format!("{{\"error\":\"{e}\"}}"),
+            };
+        }
+        // Fallback: in-memory buffer, no time-range or kind filter.
+        let events = self.mem.since(since_ms.unwrap_or(0), limit.or(Some(100)));
         serde_json::to_string_pretty(&events).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 }
@@ -84,17 +146,27 @@ impl ServerHandler for VeyoHandler {
 // ---------------------------------------------------------------------------
 
 pub struct VeyoMcpServer {
-    store: EventStore,
+    mem: MemStore,
+    #[cfg(feature = "persist")]
+    sql: Option<SqlStore>,
 }
 
 impl VeyoMcpServer {
-    pub fn new(store: EventStore) -> Self {
-        Self { store }
+    #[cfg(not(feature = "persist"))]
+    pub fn new(mem: MemStore) -> Self {
+        Self { mem }
     }
 
-    /// Run the MCP server over stdio until the transport closes.
+    #[cfg(feature = "persist")]
+    pub fn new(mem: MemStore, sql: Option<SqlStore>) -> Self {
+        Self { mem, sql }
+    }
+
     pub async fn run(self) -> anyhow::Result<()> {
-        let handler = VeyoHandler::new(self.store);
+        #[cfg(feature = "persist")]
+        let handler = VeyoHandler::new(self.mem, self.sql);
+        #[cfg(not(feature = "persist"))]
+        let handler = VeyoHandler::new(self.mem);
         let service = handler.serve(stdio()).await?;
         service.waiting().await?;
         Ok(())

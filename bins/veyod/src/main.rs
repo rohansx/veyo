@@ -9,7 +9,8 @@ use veyo_core::{
     Codec, CodecConfig, Delta, EventId, EventKind, Evidence, Frame as CoreFrame, Rect, RegionRef,
     SurfaceRef, TimeMs, SCHEMA_V,
 };
-use veyo_mcp::{EventStore, VeyoMcpServer};
+use veyo_mcp::{EventStore as MemStore, VeyoMcpServer};
+use veyo_store::EventStore as SqlStore;
 
 use config::VeyoToml;
 
@@ -27,6 +28,10 @@ struct Args {
     /// Path to veyo.toml config (default: ./veyo.toml).
     #[arg(long, default_value = "veyo.toml")]
     config: PathBuf,
+
+    /// Persist events to this SQLite file. Enables query_events MCP tool.
+    #[arg(long)]
+    store_path: Option<PathBuf>,
 
     /// Skip capture and feed synthetic events (useful for testing MCP connectivity).
     #[arg(long)]
@@ -70,7 +75,6 @@ fn main() {
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
-    // Load config, apply CLI overrides.
     let mut toml = VeyoToml::load_or_default(&args.config);
     if let Some(m) = args.monitor {
         toml.monitor = Some(m);
@@ -90,20 +94,32 @@ fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let store = EventStore::new(store_cap);
+    // Open sqlite store if requested.
+    let sql_store: Option<SqlStore> = match &args.store_path {
+        Some(path) => {
+            let s = SqlStore::open(path)?;
+            tracing::info!(path = %path.display(), "sqlite store opened");
+            Some(s)
+        }
+        None => None,
+    };
+
+    let mem_store = MemStore::new(store_cap);
 
     if args.demo {
-        let store_t = store.clone();
+        let mem_t = mem_store.clone();
+        let sql_t = sql_store.clone();
         std::thread::Builder::new()
             .name("demo".into())
-            .spawn(move || demo_thread(store_t, fps))?;
+            .spawn(move || demo_thread(mem_t, sql_t, fps))?;
         tracing::info!("running in demo mode — synthetic events only");
     } else {
-        let store_t = store.clone();
+        let mem_t = mem_store.clone();
+        let sql_t = sql_store.clone();
         std::thread::Builder::new()
             .name("capture".into())
             .spawn(move || {
-                if let Err(e) = capture_thread(store_t, codec_cfg, fps, monitor_idx) {
+                if let Err(e) = capture_thread(mem_t, sql_t, codec_cfg, fps, monitor_idx) {
                     tracing::error!("capture thread: {e:#}");
                 }
             })?;
@@ -112,15 +128,16 @@ fn run(args: Args) -> anyhow::Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(async { VeyoMcpServer::new(store).run().await })
+        .block_on(async { VeyoMcpServer::new(mem_store, sql_store).run().await })
 }
 
 // ---------------------------------------------------------------------------
-// Capture thread (live, blocking I/O)
+// Capture thread
 // ---------------------------------------------------------------------------
 
 fn capture_thread(
-    store: EventStore,
+    mem: MemStore,
+    sql: Option<SqlStore>,
     cfg: CodecConfig,
     fps: u64,
     monitor_idx: usize,
@@ -150,7 +167,8 @@ fn capture_thread(
         cfg.grid.1,
     );
     push_deltas(
-        &store,
+        &mem,
+        sql.as_ref(),
         codec.observe(CoreFrame {
             t_ms: first.t_ms,
             cells: &first_cells,
@@ -164,7 +182,8 @@ fn capture_thread(
             Ok(f) => {
                 let cells = rgba_to_cells(&f.rgba, f.width, f.height, cfg.grid.0, cfg.grid.1);
                 push_deltas(
-                    &store,
+                    &mem,
+                    sql.as_ref(),
                     codec.observe(CoreFrame {
                         t_ms: f.t_ms,
                         cells: &cells,
@@ -180,10 +199,10 @@ fn capture_thread(
 }
 
 // ---------------------------------------------------------------------------
-// Demo thread (synthetic events, no display required)
+// Demo thread
 // ---------------------------------------------------------------------------
 
-fn demo_thread(store: EventStore, fps: u64) {
+fn demo_thread(mem: MemStore, sql: Option<SqlStore>, fps: u64) {
     let interval = Duration::from_millis(1000 / fps.max(1));
     let events: &[(&str, EventKind, &str)] = &[
         (
@@ -217,7 +236,7 @@ fn demo_thread(store: EventStore, fps: u64) {
     };
     loop {
         for (region_id, kind, summary) in events.iter().copied() {
-            std::thread::sleep(interval * 20); // one event every ~5s at 4fps
+            std::thread::sleep(interval * 20);
             seq += 1;
             let t_ms = epoch_ms();
             let delta = Delta {
@@ -248,13 +267,16 @@ fn demo_thread(store: EventStore, fps: u64) {
                 },
                 evidence: Evidence::default(),
             };
-            tracing::info!(id = %delta.id.0, kind = ?delta.kind, "{}", delta.summary);
-            store.push(delta);
+            push_deltas(&mem, sql.as_ref(), vec![delta]);
         }
     }
 }
 
-fn push_deltas(store: &EventStore, deltas: Vec<Delta>) {
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+fn push_deltas(mem: &MemStore, sql: Option<&SqlStore>, deltas: Vec<Delta>) {
     for d in deltas {
         tracing::info!(
             id = %d.id.0,
@@ -263,7 +285,12 @@ fn push_deltas(store: &EventStore, deltas: Vec<Delta>) {
             "{}",
             d.summary,
         );
-        store.push(d);
+        mem.push(d.clone());
+        if let Some(store) = sql {
+            if let Err(e) = store.insert(&d) {
+                tracing::warn!("store insert failed: {e:#}");
+            }
+        }
     }
 }
 

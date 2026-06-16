@@ -14,7 +14,8 @@ path = "src/main.rs"
 [dependencies]
 veyo-core = { path = "../../crates/veyo-core" }
 veyo-capture = { path = "../../crates/veyo-capture" }
-veyo-mcp = { path = "../../crates/veyo-mcp" }
+veyo-mcp = { path = "../../crates/veyo-mcp", features = ["persist"] }
+veyo-store = { path = "../../crates/veyo-store" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

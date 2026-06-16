@@ -10,8 +10,9 @@ members = [
     "crates/veyo-eval",       # Phase 0: offline replay + scoring + tuning
     "crates/veyo-capture",    # Phase 1: live screen capture abstraction
     "crates/veyo-mcp",        # Phase 1: MCP server
+    "crates/veyo-store",      # Phase 1+: sqlite event persistence
     "bins/veyod",             # Phase 1: daemon binary
-    # "crates/veyo-store",    # Phase 3
+    # "crates/veyo-enrich",   # Phase 3 (optional feature)
     # "crates/veyo-enrich",   # Phase 3 (optional feature)
 ]
 
@@ -33,5 +34,6 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 xcap = "0.9.6"
 clap = { version = "4.6", features = ["derive"] }
 toml = "1.0"
+rusqlite = "0.40"
 rmcp = { version = "1.7.0", features = ["server", "transport-io", "macros"] }
 schemars = "1"
