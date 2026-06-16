@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from architecture.md, do not edit">
+<title>veyo — architecture · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a class="active" href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-system-shape">1. System shape</a></li>
+<li><a href="#2-components">2. Components</a><ul>
+<li><a href="#capture-backends">Capture backends</a></li>
+<li><a href="#tier-2-enrichment-optional">Tier-2 enrichment (optional)</a></li>
+</ul>
+</li>
+<li><a href="#3-pipeline-trait-boundaries">3. Pipeline &amp; trait boundaries</a></li>
+<li><a href="#4-workspace-layout">4. Workspace layout</a></li>
+<li><a href="#mcp-surface">5. MCP surface</a></li>
+<li><a href="#6-storage">6. Storage</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-architecture">veyo — architecture</h1>
+<blockquote>
+<p>The structural <em>how</em>: components, data flow, trait boundaries, and the workspace that keeps them decoupled. For the concrete types and crate versions see <a href="tech-specs.html">Tech Specs</a>; for the decision logic inside the pipeline see the <a href="policy-engine.html">Policy Engine</a>.</p>
+</blockquote>
+<p><code>veyo</code> ships as a single Rust binary, <strong><code>veyod</code></strong>, built from a Cargo workspace. It reuses existing muscles: <code>ort</code> (ONNX), the MCP server pattern, sqlite/FTS5, and single-binary distribution.</p>
+<hr />
+<h2 id="1-system-shape">1. System shape</h2>
+<pre><code> capture backend ─► ring buffer ─► diff/pHash ─► region FSM ─► salience+habituation
+                                                                      │
+                                                          (pass) ─────┤
+                                                                      ▼
+                                                        Tier-2 enrich (optional, ort)
+                                                                      ▼
+                                              world-state  ──►  delta emitter
+                                                                      ├─► MCP server (stream + query)
+                                                                      └─► ctxgraph / sqlite (bi-temporal log)
+</code></pre>
+<p>The flow is <strong>cheap → expensive, short-circuiting early</strong>: ~99% of frames are dropped at the first cheap diff gate and never reach the FSM, let alone the optional ML enrichment. That ordering is the whole performance story — see the <a href="policy-engine.html">Policy Engine</a> for the gate-by-gate breakdown.</p>
+<hr />
+<h2 id="2-components">2. Components</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Crate</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Capture</strong></td>
+<td><code>veyo-capture</code></td>
+<td>Platform backends behind one trait; produce frames (+ optional OS damage rects).</td>
+</tr>
+<tr>
+<td><strong>Ring buffer</strong></td>
+<td><code>veyo-capture</code></td>
+<td>Bounded in-memory frame store. Raw pixels live <strong>here only</strong> — never on disk by default.</td>
+</tr>
+<tr>
+<td><strong>Diff / pHash</strong></td>
+<td><code>veyo-core</code></td>
+<td>Per-region downscaled perceptual hash / SAD — the cheap Tier-1 change signal.</td>
+</tr>
+<tr>
+<td><strong>Region FSM</strong></td>
+<td><code>veyo-core</code></td>
+<td>Per-region debounce state machine: <code>STATIC → CHANGING → SETTLING → STATIC</code>.</td>
+</tr>
+<tr>
+<td><strong>Salience + habituation</strong></td>
+<td><code>veyo-core</code></td>
+<td>Scores each candidate change; decays repetitive change toward silence.</td>
+</tr>
+<tr>
+<td><strong>Tier-2 enrich</strong></td>
+<td><code>veyo-enrich</code></td>
+<td>Optional, off by default. UI tagger / OCR via <code>ort</code>, run only on gate-passing events.</td>
+</tr>
+<tr>
+<td><strong>World-state</strong></td>
+<td><code>veyo-core</code></td>
+<td>The compact, always-current text model of the scene.</td>
+</tr>
+<tr>
+<td><strong>Delta emitter</strong></td>
+<td><code>veyo-core</code></td>
+<td>Builds the typed, bi-temporal records and fans them out.</td>
+</tr>
+<tr>
+<td><strong>MCP server</strong></td>
+<td><code>veyo-mcp</code></td>
+<td>Live stream + query surface via <code>rmcp</code>.</td>
+</tr>
+<tr>
+<td><strong>Store</strong></td>
+<td><code>veyo-store</code></td>
+<td>Append-only bi-temporal log (rusqlite/FTS5) and a <code>ctxgraph</code> adapter.</td>
+</tr>
+<tr>
+<td><strong>Daemon</strong></td>
+<td><code>veyod</code> (bin)</td>
+<td>Wires capture → core → mcp → store; owns config and lifecycle.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capture-backends">Capture backends</h3>
+<p><code>veyo</code> targets several platforms behind one trait, built in this order:</p>
+<ol>
+<li><strong><code>PollBackend</code></strong> (<code>xcap</code>/<code>scap</code>) — grab a full frame at <code>capture_fps</code>, no damage info. <strong>Phase 1.</strong> Trivial, cross-platform, gets the whole pipeline alive on every OS.</li>
+<li><strong><code>PipewireBackend</code></strong> (<code>ashpd</code> portal + <code>pipewire</code>, DMA-BUF) — <strong>Phase 3</strong> optimization on Linux/Wayland. Feeds compositor <strong>damage rects</strong> so the differ skips untouched regions for ~free, and zero-copies via DMA-BUF.</li>
+<li><strong><code>DxgiBackend</code></strong> (Windows, DXGI Desktop Duplication) and <strong><code>ScreenCaptureKitBackend</code></strong> (macOS) — later. Note: macOS exposes <strong>no native dirty-rects</strong>, so it leans entirely on Tier-1 pHash.</li>
+</ol>
+<blockquote>
+<p><strong>The decoupling is the point.</strong> The FSM and everything downstream never change regardless of which backend is active. The capture layer is the <em>only</em> place that knows which OS it's on. See the <a href="tech-specs.html#capture-backend-trait"><code>CaptureBackend</code> trait</a>.</p>
+</blockquote>
+<h3 id="tier-2-enrichment-optional">Tier-2 enrichment (optional)</h3>
+<p>A small UI-element detector (YOLO-class) and/or a Rust OCR crate, all via <code>ort</code>. It runs <strong>only on gate-passing events, on a single region's thumbnail</strong> — dozens of times per hour, not 30×/second. Off by default to preserve the cheap/private posture. It turns a templated summary (<em>"region r_3 settled after 1.4s"</em>) into a semantic one (<em>"a confirmation dialog 'Overwrite file?' appeared"</em>). Details in <a href="tech-specs.html#tier-2-enrichment">Tech Specs</a>.</p>
+<hr />
+<h2 id="3-pipeline-trait-boundaries">3. Pipeline &amp; trait boundaries</h2>
+<pre><code>CaptureBackend ──frames──► RegionDiffer ──changed regions──► Fsm ──transitions──►
+    SalienceScorer ──(pass)──► [Enricher (opt)] ──► WorldState.update + DeltaEmitter
+                                                          ├──► veyo-mcp  (stream/query)
+                                                          └──► veyo-store (bi-temporal log)
+</code></pre>
+<p><strong>Each arrow is a channel</strong> (<code>tokio::sync</code>), so stages run concurrently and a slow Tier-2 inference never blocks Tier-1 diffing. The pipeline is back-pressure-friendly: if enrichment falls behind, Tier-1 diffing and the FSM keep running; only enriched summaries lag, and the templated fallback is always available.</p>
+<p>Boundaries that matter:</p>
+<ul>
+<li><strong><code>veyo-core</code> does no I/O.</strong> It takes frames/regions in and emits deltas out. That makes it trivially unit-testable and lets the <a href="eval-harness.html">eval harness</a> drive the entire decision pipeline with <em>no capture backend and no daemon at all</em>.</li>
+<li><strong>Capture is isolated behind a trait</strong> so platform churn (Wayland fiddliness, macOS's missing damage rects) never reaches the FSM.</li>
+<li><strong>Enrichment is a feature-flagged crate</strong> so the default build is cheap and private, and the ML dependency is opt-in.</li>
+</ul>
+<hr />
+<h2 id="4-workspace-layout">4. Workspace layout</h2>
+<p>A Cargo workspace decouples the capture backend from the core pipeline — a hard requirement from the cross-platform risk analysis: <strong>the FSM must not know which OS it's on.</strong></p>
+<pre><code>veyo/
+├── Cargo.toml                 # workspace
+├── crates/
+│   ├── veyo-core/             # schema, world-state, FSM, salience, habituation — NO I/O
+│   ├── veyo-capture/          # CaptureBackend trait + xcap / pipewire / x11 impls
+│   ├── veyo-enrich/           # Tier-2: ort/rten OCR + UI tagging (optional feature)
+│   ├── veyo-store/            # rusqlite bi-temporal log + query; ctxgraph adapter
+│   ├── veyo-mcp/              # rmcp server exposing the tool surface
+│   └── veyo-eval/             # Phase-0 harness: replay, annotate, score, tune
+├── bins/
+│   └── veyod/                 # the daemon: wires capture → core → mcp → store
+└── fixtures/
+    └── sessions/              # recorded sessions + annotations for eval/CI
+</code></pre>
+<p><code>veyo-core</code> is pure logic with no I/O — frames/regions in, deltas out — which is what makes both unit testing and offline replay possible.</p>
+<hr />
+<h2 id="mcp-surface">5. MCP surface</h2>
+<p>The daemon exposes its world-state and event stream over MCP (<code>rmcp</code>). Transport is <code>stdio</code> for a single-consumer agent, or <code>streamable-http</code>/SSE for the daemon-with-multiple-subscribers model.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>subscribe_events(filter)</code></td>
+<td>live stream of deltas — filter by kind, surface, <code>min_salience</code></td>
+</tr>
+<tr>
+<td><code>get_current_state()</code></td>
+<td>the world-state snapshot, as compact text</td>
+</tr>
+<tr>
+<td><code>query_events(since, until, kind?, surface?)</code></td>
+<td>historical deltas from the store</td>
+</tr>
+<tr>
+<td><code>describe_region(region_id)</code></td>
+<td><strong>lazy, on-demand</strong> Tier-2 enrichment of a region — returns <strong>text, never pixels</strong></td>
+</tr>
+</tbody>
+</table>
+<p><code>describe_region</code> is the privacy-preserving escape hatch: a remote consumer that wants more detail asks for it and gets <em>text back</em>, never the underlying image. The exact tool signatures are in <a href="tech-specs.html#mcp-surface">Tech Specs</a>; the invariant that makes it safe is in the <a href="privacy-model.html">Privacy Model</a>.</p>
+<hr />
+<h2 id="6-storage">6. Storage</h2>
+<p><code>veyo-store</code> uses <code>rusqlite</code> with FTS5 on the <code>summary</code> field. The event table is <strong>append-only</strong>, keyed by <code>id</code>, indexed on <code>t_event</code>, <code>t_observed</code>, <code>kind</code>, and <code>surface</code>. Thumbnails (only if Tier-2 is on) live in a local cache dir referenced by <code>evidence.thumb_ref</code> and <strong>never leave disk</strong>. A <code>ctxgraph</code> adapter lets the same deltas flow into the bi-temporal graph as the long-term memory layer. Schema detail in <a href="tech-specs.html#storage">Tech Specs</a>.</p>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The types and crate versions behind every box above: <strong><a href="tech-specs.html">Tech Specs</a></strong>.</li>
+<li>The logic <em>inside</em> the FSM / salience boxes: <strong><a href="policy-engine.html">Policy Engine</a></strong>.</li>
+<li>Why the capture/enrich isolation is also a privacy boundary: <strong><a href="privacy-model.html">Privacy Model</a></strong>.</li>
+<li>The build order for these components: <strong><a href="phases.html">Phases &amp; Roadmap</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>architecture.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

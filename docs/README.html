@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from README.md, do not edit">
+<title>veyo — documentation · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a class="active" href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#what-this-is">What this is</a></li>
+<li><a href="#documentation-map">Documentation map</a><ul>
+<li><a href="#the-what-why">The What &amp; Why</a></li>
+<li><a href="#the-how-design">The How (design)</a></li>
+<li><a href="#execution">Execution</a></li>
+<li><a href="#reference">Reference</a></li>
+</ul>
+</li>
+<li><a href="#status-at-a-glance">Status at a glance</a></li>
+<li><a href="#working-with-these-docs">Working with these docs</a></li>
+<li><a href="#project-naming-note">Project naming note</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-documentation">veyo — documentation</h1>
+<blockquote>
+<p><strong>veyo</strong> <em>(/ˈveɪ.oʊ/, from Latin </em><em>veo / video</em><em>, "I see")</em> — a local-first <strong>visual event codec</strong>. It turns a live screen (later, camera) feed into a compact, diff-on-state, LLM-native event stream, so an LLM or agent can have continuous, affordable, private <em>sight</em> of what's happening — <strong>without raw imagery ever leaving the device</strong>.</p>
+</blockquote>
+<p>The one-sentence thesis: <strong>visual data can live as cheap text deltas at the edge, which fixes cost and privacy with the same move.</strong></p>
+<p>Daemon binary: <code>veyod</code>. Config: <code>veyo.toml</code>. Published crate identity: <code>veyo</code>.</p>
+<hr />
+<h2 id="what-this-is">What this is</h2>
+<p><code>veyo</code> watches a screen the way the eye's fovea works: high-acuity attention on what matters, everything else ignored. Instead of streaming pixels to a vision model 30×/second, it maintains a persistent text <strong>world-state</strong> on-device and emits a small structured <strong>delta</strong> only when the scene <em>meaningfully</em> changes. Most of the time the stream is silent.</p>
+<p>The reduction is simultaneously the <strong>cost fix</strong> and the <strong>privacy guarantee</strong> — what crosses any process or network boundary is text describing change, never pixels.</p>
+<pre><code>~2.6B tokens/day   (naive: every 1080p frame → a VLM)
+        ↓  veyo: emit-only-deltas, on CPU, no imagery leaves the box
+~a few thousand tokens/day
+</code></pre>
+<p><em>OmniParser parses a frame; </em><em>veyo watches a session</em><em>.</em></p>
+<hr />
+<h2 id="documentation-map">Documentation map</h2>
+<p>Read in this order for the full picture. Each doc exists as both Markdown (<code>.md</code>) and HTML (<code>.html</code>).</p>
+<h3 id="the-what-why">The What &amp; Why</h3>
+<ul>
+<li><strong><a href="product-overview.html">Product Overview</a></strong> — the problem (cost · privacy · bandwidth), the thesis, who it's for, core concepts (world-state, deltas, the bi-temporal axis), token economics, competitive landscape, portfolio fit, and licensing.</li>
+</ul>
+<h3 id="the-how-design">The How (design)</h3>
+<ul>
+<li><strong><a href="architecture.html">Architecture</a></strong> — system shape, the capture→diff→FSM→emit pipeline, trait boundaries, the Cargo workspace layout, capture backends, and the MCP surface.</li>
+<li><strong><a href="tech-specs.html">Tech Specs</a></strong> — verified crate stack, the core Rust data model, the on-the-wire delta schema, <code>veyo.toml</code>, and storage.</li>
+<li><strong><a href="policy-engine.html">Policy Engine</a></strong> — <em>the real IP.</em> The "meaningful change" policy: the per-region debounce FSM, salience scoring, habituation / novelty, and anti-spam coalescing.</li>
+<li><strong><a href="privacy-model.html">Privacy Model</a></strong> — the moat: the non-negotiable privacy invariants, how the type system enforces them, and the compliance/audit story.</li>
+</ul>
+<h3 id="execution">Execution</h3>
+<ul>
+<li><strong><a href="eval-harness.html">Eval Harness</a></strong> — Phase 0, built first: how we test the riskiest assumption offline on recorded sessions before writing a daemon. Recording format, annotation schema, scoring, the tuning loop, and the go/no-go gate.</li>
+<li><strong><a href="plan.html">Build Plan</a></strong> — the build philosophy ("build the test for the riskiest assumption before building the thing"), the sequencing rule, and the testing strategy.</li>
+<li><strong><a href="phases.html">Phases &amp; Roadmap</a></strong> — the phased roadmap (0→4), the v1 MVP scope (in / out), per-phase success gates, and timeboxes.</li>
+<li><strong><a href="risks-and-open-questions.html">Risks &amp; Open Questions</a></strong> — product- and engineering-level risks with mitigations, plus the open decisions to resolve during Phase 0–1.</li>
+</ul>
+<h3 id="reference">Reference</h3>
+<ul>
+<li><strong><a href="glossary.html">Glossary</a></strong> — every term of art in one place.</li>
+</ul>
+<hr />
+<h2 id="status-at-a-glance">Status at a glance</h2>
+<p>This is a <strong>v0.1 draft spec</strong>. Nothing is built yet; the next concrete deliverable is the Phase 0 eval harness.</p>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Focus</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0 — Validate</strong></td>
+<td>Core pipeline + eval harness, offline on recorded sessions</td>
+<td><span class="pill next">next up</span></td>
+</tr>
+<tr>
+<td>1 — Live MVP</td>
+<td><code>PollBackend</code> + core + MCP stream; the <code>veyod</code> binary</td>
+<td>planned</td>
+</tr>
+<tr>
+<td>2 — Tune &amp; habituate</td>
+<td>Full habituation/novelty; defaults locked from the harness</td>
+<td>planned</td>
+</tr>
+<tr>
+<td>3 — Optimize &amp; enrich</td>
+<td>PipeWire damage path + storage + optional Tier-2</td>
+<td>planned</td>
+</tr>
+<tr>
+<td>4 — Expand</td>
+<td>CloakPipe routing, <code>blocks</code> mode, camera, Win/macOS backends</td>
+<td>planned</td>
+</tr>
+</tbody>
+</table>
+<p>The single gate that decides whether the thesis holds: <strong>on ≥3 real recorded sessions, recall ≥ ~0.9 at emission &lt; ~1% of frames, on CPU.</strong> See <a href="eval-harness.html">Eval Harness</a>.</p>
+<hr />
+<h2 id="working-with-these-docs">Working with these docs</h2>
+<p>The HTML is <strong>generated</strong> from the Markdown — never hand-edit a <code>.html</code> file.</p>
+<pre><code class="language-bash"># from docs/
+python3 build.py            # render every *.md -&gt; *.html (+ index.html)
+python3 build.py --check    # CI: fail if any HTML is stale vs its Markdown
+</code></pre>
+<p><code>build.py</code> renders tables, fenced code, and a per-page table of contents, rewrites intra-doc <code>*.md</code> links to <code>*.html</code>, and wraps each page in the shared sidebar template at <a href="assets/style.css"><code>assets/style.css</code></a>.</p>
+<hr />
+<h2 id="project-naming-note">Project naming note</h2>
+<p>The working name was <code>fovea</code> (the high-acuity center of the retina). <code>fovea</code> is taken on crates.io, so the published identity is <strong><code>veyo</code></strong> — short, ownable, and phonetically "I see." The daemon is <code>veyod</code>; the config file is <code>veyo.toml</code>; workspace crates are <code>veyo-core</code>, <code>veyo-capture</code>, <code>veyo-enrich</code>, <code>veyo-store</code>, <code>veyo-mcp</code>, and <code>veyo-eval</code>. The retired alternative <code>veyl</code> is mentioned only in historical context.</p>
+<footer class="docfooter">
+  <span>Generated from <code>README.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

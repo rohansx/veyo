@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+# Library workspace — let downstream pin. Revisit when veyod (a binary) lands.
+Cargo.lock
+
+# Local tooling caches (not part of the project)
+/.illuminate/
+/.fastembed_cache/
+
+# veyo runtime: local-only thumbnail cache / recorded eval sessions are large
+/fixtures/sessions/**/frames/
+*.webp
+
+# Editors / OS
+*.swp
+.DS_Store

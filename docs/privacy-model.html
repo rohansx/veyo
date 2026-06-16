@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from privacy-model.md, do not edit">
+<title>veyo — privacy model · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a class="active" href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-privacy-invariants-non-negotiable">1. Privacy invariants (non-negotiable)</a></li>
+<li><a href="#2-the-reduction-is-the-guarantee">2. The reduction is the guarantee</a></li>
+<li><a href="#3-enforced-by-the-type-system-not-by-discipline">3. Enforced by the type system, not by discipline</a></li>
+<li><a href="#4-the-describe_region-escape-hatch">4. The describe_region escape hatch</a></li>
+<li><a href="#5-cloud-consumers-cloakpipe">5. Cloud consumers &amp; CloakPipe</a></li>
+<li><a href="#compliance">6. Compliance &amp; audit story</a></li>
+<li><a href="#7-summary-table">7. Summary table</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-privacy-model">veyo — privacy model</h1>
+<blockquote>
+<p><strong>This is the moat.</strong> The reduction that makes <code>veyo</code> cheap is the <em>same act</em> that makes it private: once a frame becomes a short text delta on-device, there is nothing pixel-shaped left to leak. This document states the invariants, shows how the type system enforces them, and lays out the compliance story.</p>
+</blockquote>
+<p>The guiding principle: <strong>what crosses any process or network boundary is text describing change, never pixels.</strong></p>
+<hr />
+<h2 id="1-privacy-invariants-non-negotiable">1. Privacy invariants (non-negotiable)</h2>
+<p>These five are not features to be balanced against others — they are the product's reason to exist.</p>
+<ol>
+<li><strong>Raw frames live only in an in-memory ring buffer; never persisted to disk by default.</strong></li>
+<li><strong>Nothing pixel-based crosses the process boundary — only structured deltas.</strong></li>
+<li><strong><code>evidence</code> references stay local.</strong> A remote consumer can ask <code>describe_region()</code> and get <em>text</em>, never the image.</li>
+<li><strong>Tier-2 enrichment (OCR/UI captioning) runs on-device.</strong> If summaries may contain PII and a <em>cloud</em> LLM is the consumer, route summaries through <strong>CloakPipe</strong> (text-layer) before emit. Fully-local consumers skip this.</li>
+<li><strong>A bi-temporal audit log of exactly what was emitted = the DPDP/compliance evidence story.</strong></li>
+</ol>
+<hr />
+<h2 id="2-the-reduction-is-the-guarantee">2. The reduction <em>is</em> the guarantee</h2>
+<p>Most "private" capture tools record everything raw and then try to protect it — encryption at rest, access controls, redaction passes. <code>veyo</code> inverts this: the sensitive artifact (the frame) is <strong>destroyed by design</strong> as part of normal operation. A frame enters the in-memory ring buffer, is reduced to a perceptual hash and a short summary, and is overwritten. There is no raw archive to breach, subpoena, or exfiltrate.</p>
+<p>This is why the cost story and the privacy story are the same sentence: <em>visual data can live as cheap text deltas at the edge.</em> You don't pay for privacy with a worse product; the cheap path and the private path are one path.</p>
+<hr />
+<h2 id="3-enforced-by-the-type-system-not-by-discipline">3. Enforced by the type system, not by discipline</h2>
+<p>Invariant #2 is the easiest to violate by accident — one careless <code>serde::Serialize</code> and a thumbnail rides out on the wire. So it is enforced in the <strong>types</strong>, not in code review:</p>
+<ul>
+<li>The <code>Delta.evidence</code> field carries a <code>#[serde(skip)]</code>-style boundary, so it <strong>physically cannot be serialized</strong> onto the MCP wire. (See the type in <a href="tech-specs.html#core-data-model">Tech Specs</a>.)</li>
+<li><code>evidence</code> holds only a perceptual hash (<code>phash</code>) and a local cache reference (<code>thumb_ref</code>) — both <strong>local-only by construction</strong>. They exist for local audit/replay and lazy on-demand enrichment, never for export.</li>
+</ul>
+<p>If a future change tried to emit pixels, it would have to <em>deliberately</em> defeat the type boundary — which is reviewable in a way that "remembering not to log the frame" never is.</p>
+<hr />
+<h2 id="4-the-describe_region-escape-hatch">4. The <code>describe_region</code> escape hatch</h2>
+<p>A remote consumer sometimes legitimately needs <em>more</em> than the templated summary — "what did that dialog actually say?". The answer is <code>describe_region(region_id)</code>:</p>
+<ul>
+<li>It runs Tier-2 enrichment <strong>on-device</strong>, on that one region's local thumbnail.</li>
+<li>It returns <strong>text only</strong> — never the image.</li>
+</ul>
+<p>So the system can be more informative on demand without ever weakening invariant #2. Detail is pulled as <em>description</em>, not as pixels. The tool is defined in <a href="architecture.html#mcp-surface">Architecture §5</a>.</p>
+<hr />
+<h2 id="5-cloud-consumers-cloakpipe">5. Cloud consumers &amp; CloakPipe</h2>
+<p>The default posture assumes a <strong>fully-local</strong> consumer (a local LLM / agent), for which no text ever leaves the device and invariants #1–#3 fully cover the privacy story.</p>
+<p>When the consumer is a <strong>cloud</strong> LLM, the summaries themselves — though text, not pixels — may contain PII (a visible email, an account number that OCR lifted). For that case:</p>
+<ul>
+<li>Route summaries through <strong>CloakPipe</strong> (the text-layer PII gate) before emit.</li>
+<li>This extends CloakPipe's existing DPDP evidence story into the <em>visual</em> modality — the same redaction guarantees, now covering what <code>veyo</code> sees.</li>
+</ul>
+<p>CloakPipe routing is <strong>out of v1 scope</strong> (see <a href="phases.html">Phases</a>) — the interface is anticipated, the integration is later.</p>
+<hr />
+<h2 id="compliance">6. Compliance &amp; audit story</h2>
+<p>The <strong>bi-temporal log</strong> is not just a memory feature — it is the compliance artifact. Because every delta records both <code>t_event</code> (when it happened on screen) and <code>t_observed</code> (when the codec emitted it), the store is a complete, timestamped record of <strong>exactly what information left the sensor and when</strong>.</p>
+<ul>
+<li>For a regulator's question — <em>"what did this system observe and transmit about the user?"</em> — the answer is a query, not a forensic reconstruction.</li>
+<li>The log contains <strong>text deltas only</strong>; there is no raw-frame archive to produce, which is itself the strongest possible answer to <em>"what could have leaked?"</em>.</li>
+<li>This is the DPDP (and adjacent regimes') evidence posture that the commercial/compliance tier is built on (see <a href="product-overview.html#7-licensing">Product Overview §7</a>).</li>
+</ul>
+<hr />
+<h2 id="7-summary-table">7. Summary table</h2>
+<table>
+<thead>
+<tr>
+<th>Boundary</th>
+<th>What can cross</th>
+<th>What cannot</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ring buffer → anything</td>
+<td>reduced hashes, summaries</td>
+<td>raw frames (overwritten in memory)</td>
+</tr>
+<tr>
+<td>Process → MCP wire</td>
+<td>structured deltas (text)</td>
+<td><code>evidence</code> (type-fenced), thumbnails, pixels</td>
+</tr>
+<tr>
+<td>Device → cloud LLM</td>
+<td>summaries, optionally CloakPipe-sanitized</td>
+<td>imagery, <code>evidence</code>, raw frames</td>
+</tr>
+<tr>
+<td><code>describe_region</code> response</td>
+<td>text description</td>
+<td>the region image</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The fenced type that enforces invariant #2: <strong><a href="tech-specs.html#core-data-model">Tech Specs</a></strong>.</li>
+<li>Where <code>describe_region</code> lives: <strong><a href="architecture.html#mcp-surface">Architecture</a></strong>.</li>
+<li>The eval harness must verify nothing pixel-shaped is ever emitted: <strong><a href="eval-harness.html">Eval Harness</a></strong>.</li>
+<li>Schema-freeze as a stability/compliance guarantee: <strong><a href="risks-and-open-questions.html">Risks &amp; Open Questions</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>privacy-model.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

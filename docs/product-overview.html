@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from product-overview.md, do not edit">
+<title>veyo — product overview · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a class="active" href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-problem">1. Problem</a></li>
+<li><a href="#2-who-its-for-v1">2. Who it's for (v1)</a></li>
+<li><a href="#3-core-concepts">3. Core concepts</a><ul>
+<li><a href="#31-world-state">3.1 World-state</a></li>
+<li><a href="#32-deltas-events">3.2 Deltas (events)</a></li>
+<li><a href="#33-the-bi-temporal-axis">3.3 The bi-temporal axis</a></li>
+</ul>
+</li>
+<li><a href="#4-token-economics-the-proof">4. Token economics (the proof)</a></li>
+<li><a href="#5-competitive-landscape">5. Competitive landscape</a></li>
+<li><a href="#6-portfolio-fit">6. Portfolio fit</a></li>
+<li><a href="#7-licensing">7. Licensing</a></li>
+<li><a href="#where-to-go-next">Where to go next</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-product-overview">veyo — product overview</h1>
+<blockquote>
+<p>The <em>what</em> and <em>why</em>. For the <em>how</em>, see <a href="architecture.html">Architecture</a>, <a href="tech-specs.html">Tech Specs</a>, and the <a href="policy-engine.html">Policy Engine</a>. This document distills the product thesis; the companion docs make it buildable.</p>
+</blockquote>
+<p><code>veyo</code> is a local-first <strong>visual event codec</strong>. It turns a live screen (later, camera) feed into a compact, diff-on-state, LLM-native event stream — so an LLM or agent can have continuous, affordable, private "sight" of what's happening, without raw imagery ever leaving the device.</p>
+<p><strong>The one-sentence thesis:</strong> <em>visual data can live as cheap text deltas at the edge, which fixes cost and privacy with the same move.</em></p>
+<hr />
+<h2 id="1-problem">1. Problem</h2>
+<p>Continuous visual awareness for an LLM is currently gated by three things <strong>at once</strong>:</p>
+<ol>
+<li><strong>Cost.</strong> A single 1080p frame is ~1k vision tokens. 30 fps × 24 h ≈ <strong>2.6B tokens/day</strong> for one source. Nobody runs an LLM watching a live feed; it's economically dead.</li>
+<li><strong>Privacy.</strong> The tools that <em>do</em> watch continuously (screen-memory recorders, computer-use agents) capture and often transmit raw frames — every visible name, email, account number, message.</li>
+<li><strong>Bandwidth.</strong> Raw or even H.264 video chokes weak networks, edge devices, and per-call agent budgets.</li>
+</ol>
+<p><code>veyo</code> collapses all three: reduce each frame to structured text <strong>on-device</strong>, maintain a persistent world-state, and emit only a delta when the scene <strong>meaningfully changes</strong>. The reduction is simultaneously the cost fix and the privacy guarantee — what crosses any boundary is text describing change, never pixels.</p>
+<hr />
+<h2 id="2-who-its-for-v1">2. Who it's for (v1)</h2>
+<p>The lowest-stakes beachhead that still proves the codec: <strong>continuous screen perception for AI agents and copilots.</strong></p>
+<ul>
+<li><strong>Computer-use / coding agents</strong> that need cheap, ongoing awareness of a screen or terminal without re-screenshotting into a VLM every step.</li>
+<li><strong>Local copilots</strong> that want to react to events — "build finished", "a modal appeared", "the long-running job errored" — without a 24/7 vision bill.</li>
+</ul>
+<p><strong>Later tiers (explicitly out of v1):</strong> camera-based presence/activity monitoring, then high-trust safety/eldercare use cases once the reduction is battle-tested. <strong>Do not lead with life-safety claims.</strong> The beachhead is chosen precisely because a missed event costs an agent a re-screenshot, not a life.</p>
+<hr />
+<h2 id="3-core-concepts">3. Core concepts</h2>
+<h3 id="31-world-state">3.1 World-state</h3>
+<p>A compact, always-current text representation of the scene. For a screen source:</p>
+<ul>
+<li><code>surfaces</code> — windows/apps (id, app, title, focused?, bounds)</li>
+<li><code>regions</code> — spatial zones within the focused surface (a grid in v1; detected UI blocks in v2)</li>
+<li>per-region <code>activity_state</code> — <code>STATIC | CHANGING | SETTLING</code></li>
+<li>per-region <code>baseline</code> — rolling novelty/change-frequency estimate (for habituation)</li>
+<li>optional <code>summary</code> — a short semantic description of a region (populated lazily, only via Tier-2)</li>
+</ul>
+<p>Queryable at any time via <code>get_current_state()</code>. This is what an agent reads to orient itself. The data model behind it is specified in <a href="tech-specs.html#core-data-model">Tech Specs</a>.</p>
+<h3 id="32-deltas-events">3.2 Deltas (events)</h3>
+<p>The stream is a sequence of typed, bi-temporal, compact records. <strong>Most of the time the stream is silent.</strong></p>
+<p>Event types (screen source, v1):</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>focus_change</code></td>
+<td>active surface changed (app/window switch)</td>
+</tr>
+<tr>
+<td><code>surface_open</code> / <code>surface_close</code></td>
+<td>a window/app appeared or disappeared</td>
+</tr>
+<tr>
+<td><code>region_change</code></td>
+<td>a region started changing past the noise floor</td>
+</tr>
+<tr>
+<td><code>state_settle</code></td>
+<td>a previously-changing region went static (page/load finished) — <strong>often the most useful event</strong></td>
+</tr>
+<tr>
+<td><code>idle</code> / <code>active</code></td>
+<td>overall session activity transition</td>
+</tr>
+<tr>
+<td><code>anomaly</code></td>
+<td>change inconsistent with recent baseline (v2, optional)</td>
+</tr>
+</tbody>
+</table>
+<p>The full wire schema for a delta is in <a href="tech-specs.html#delta-schema">Tech Specs</a>. The logic that <em>decides</em> when to emit one is the <a href="policy-engine.html">Policy Engine</a>.</p>
+<h3 id="33-the-bi-temporal-axis">3.3 The bi-temporal axis</h3>
+<p>Every delta carries <strong>two</strong> timestamps:</p>
+<ul>
+<li><code>t_event</code> — when it happened on screen</li>
+<li><code>t_observed</code> — when the codec emitted it</li>
+</ul>
+<p>This is exactly the shape <code>ctxgraph</code> ingests. <code>veyo</code> writes into <code>ctxgraph</code> as its event log, making "the sensor that feeds the knowledge graph" a real integration rather than a slogan. The same bi-temporal log is also the <a href="privacy-model.html#compliance">privacy/compliance audit trail</a>.</p>
+<hr />
+<h2 id="4-token-economics-the-proof">4. Token economics (the proof)</h2>
+<table>
+<thead>
+<tr>
+<th>approach</th>
+<th>tokens/day (1 source)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>naive: every frame to a VLM (1080p, 30 fps)</td>
+<td><strong>~2.6B</strong></td>
+</tr>
+<tr>
+<td>OmniParser-style: full parse per sampled frame</td>
+<td>still 100s of millions, <strong>+ GPU</strong></td>
+</tr>
+<tr>
+<td><strong>veyo:</strong> emit-only-deltas, ~dozens of events/hr × ~50 tok</td>
+<td><strong>a few thousand</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Five-to-six orders of magnitude, on CPU, with no imagery leaving the box.</strong> This number is what the <a href="eval-harness.html">Eval Harness</a> exists to prove on real footage before any daemon is built.</p>
+<hr />
+<h2 id="5-competitive-landscape">5. Competitive landscape</h2>
+<p>The pieces and two adjacent tools exist; the specific <em>combination</em> does not.</p>
+<table>
+<thead>
+<tr>
+<th>tool</th>
+<th>what it is</th>
+<th>why it's not this</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OmniParser v2</strong> (Microsoft)</td>
+<td>screenshot → structured UI elements for LLM agents</td>
+<td>stateless per-frame, full re-parse every call, GPU-heavy (~0.6–0.8s/frame), built for action-grounding not change; no diff, no event stream, no temporal compression, needs the frame</td>
+</tr>
+<tr>
+<td><strong>peepshow</strong></td>
+<td>video file → scene-detect + pHash dedup → LLM narrates changes → timeline</td>
+<td>batch over recorded files, camera/CCTV focus, sends selected <em>frames</em> to the model (imagery leaves), no persistent world-state, not screen/agent</td>
+</tr>
+<tr>
+<td><strong>ChainStream</strong> (MobiSys '24)</td>
+<td>academic stream-based LLM context-sensing framework</td>
+<td>research-grade WIP, queries LLM per frame (no cheap-diff-first), mobile-context focus</td>
+</tr>
+<tr>
+<td><strong>Screenpipe</strong></td>
+<td>continuous local screen+audio capture → OCR/index → search/memory</td>
+<td>records &amp; stores <em>everything</em> raw; opposite of emit-only-deltas; personal memory, not agent perception</td>
+</tr>
+<tr>
+<td><strong>Recall / Rewind</strong></td>
+<td>screen-history search</td>
+<td>raw capture (Recall local, Rewind cloud); no diff-codec, no agent stream</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Differentiation — all of these, together, is the wedge:</strong></p>
+<ul>
+<li>live (not batch)</li>
+<li>screen-source for <strong>agent perception</strong></li>
+<li>diff-on-semantic-state with a <strong>persistent world-model</strong></li>
+<li><strong>emit-only-deltas</strong></li>
+<li><strong>no imagery leaves the device</strong></li>
+<li>cheap / CPU (no A100)</li>
+<li><strong>MCP-native</strong></li>
+<li>bi-temporal log (ctxgraph-ready)</li>
+</ul>
+<p><strong>Positioning line:</strong> <em>OmniParser parses a frame; veyo watches a session.</em></p>
+<hr />
+<h2 id="6-portfolio-fit">6. Portfolio fit</h2>
+<p><code>veyo</code> is not a standalone bet — it slots into an existing local-agent stack and reuses proven muscles.</p>
+<ul>
+<li><strong><code>ctxgraph</code></strong> — the bi-temporal store <code>veyo</code> writes into.</li>
+<li><strong><code>homn</code></strong> — supervises an agent's <em>actions</em> (hands); <code>veyo</code> gives it <em>perception</em> (eyes). Eyes + hands = a coherent local agent runtime, both halves yours.</li>
+<li><strong><code>cloakpipe</code></strong> — the optional text-layer PII gate for cloud-bound summaries; extends its DPDP evidence story into the visual modality. See <a href="privacy-model.html">Privacy Model</a>.</li>
+<li><strong>Reused infrastructure</strong> — <code>ort</code> (ONNX), MCP, sqlite/FTS5, single-binary Rust. No new muscles required.</li>
+</ul>
+<hr />
+<h2 id="7-licensing">7. Licensing</h2>
+<p>Open-core, consistent with CloakPipe:</p>
+<ul>
+<li><strong>Core</strong> (permissive, or AGPL): the daemon + the delta schema.</li>
+<li><strong>Commercial layer:</strong> managed enrichment models, CloakPipe integration, compliance/audit tooling, and support.</li>
+</ul>
+<hr />
+<h2 id="where-to-go-next">Where to go next</h2>
+<ul>
+<li>The structure that realizes this: <strong><a href="architecture.html">Architecture</a></strong>.</li>
+<li>The thing that decides whether it works at all: the <strong><a href="policy-engine.html">Policy Engine</a></strong> and the <strong><a href="eval-harness.html">Eval Harness</a></strong>.</li>
+<li>Why "no imagery leaves the device" is enforceable, not just promised: the <strong><a href="privacy-model.html">Privacy Model</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>product-overview.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

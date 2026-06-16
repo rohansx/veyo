@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from risks-and-open-questions.md, do not edit">
+<title>veyo — risks & open questions · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a class="active" href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-the-headline-risk">1. The headline risk</a></li>
+<li><a href="#2-product-level-risks">2. Product-level risks</a></li>
+<li><a href="#3-engineering-level-risks">3. Engineering-level risks</a></li>
+<li><a href="#4-why-these-two-risk-lists-overlap">4. Why these two risk lists overlap</a></li>
+<li><a href="#5-open-decisions-resolve-during-phase-01">5. Open decisions (resolve during Phase 0–1)</a></li>
+<li><a href="#6-the-freeze-list-lock-before-v01">6. The freeze list (lock before v0.1)</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-risks-open-questions">veyo — risks &amp; open questions</h1>
+<blockquote>
+<p>The honest list: what could go wrong, how the plan mitigates it, and which decisions are deliberately deferred to Phase 0–1. The whole <a href="plan.html">Build Plan</a> is structured to retire the top risk first.</p>
+</blockquote>
+<hr />
+<h2 id="1-the-headline-risk">1. The headline risk</h2>
+<blockquote>
+<p><strong>Salience tuning is empirical.</strong> There is no closed form for "meaningful change." It needs the <a href="eval-harness.html">eval harness</a> and real sessions. <strong>This is the main risk to the timeline</strong> — and the reason Phase 0 exists before anything else.</p>
+</blockquote>
+<p>Everything below is secondary to this one.</p>
+<hr />
+<h2 id="2-product-level-risks">2. Product-level risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Region definition</strong> — a fixed grid is simple but dumb; detected UI blocks are smarter but heavier.</td>
+<td>Start with <code>grid</code>. Measure recall in the harness; escalate to <code>blocks</code> <strong>only if recall demands it</strong>.</td>
+</tr>
+<tr>
+<td><strong>Salience tuning is empirical</strong> — no closed form.</td>
+<td>Phase 0 harness + CI fixtures; treat it as ML, not intuition. The dominant timeline risk.</td>
+</tr>
+<tr>
+<td><strong>Settle window varies by content</strong> — a spinner, a page load, and typing settle very differently.</td>
+<td>May need per-content-class windows. Start with one <code>settle_window_ms</code>; let the harness reveal whether one value suffices.</td>
+</tr>
+<tr>
+<td><strong>Animation / video regions</strong></td>
+<td>Habituation should handle these (novelty → 0). <strong>Verify it doesn't also habituate to legitimately important repeated events</strong> — exercise pattern-break hard in the harness.</td>
+</tr>
+<tr>
+<td><strong>Capture portability</strong> — Wayland capture is fiddly.</td>
+<td>Budget for it. Don't start there: <code>PollBackend</code> first, PipeWire as a Phase-3 optimization.</td>
+</tr>
+<tr>
+<td><strong>Schema versioning</strong> — consumers bind to the wire shape.</td>
+<td>Lock <code>v</code> semantics (and the <code>StateSettle</code> shape) <strong>early</strong>, before v0.1 ships.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-engineering-level-risks">3. Engineering-level risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Tuning is empirical</strong></td>
+<td>Phase 0 harness + CI fixtures; treat as ML, not intuition.</td>
+</tr>
+<tr>
+<td><strong>macOS has no dirty-rects</strong></td>
+<td>The <a href="tech-specs.html#capture-backend-trait"><code>CaptureBackend</code> trait</a> isolates this; macOS leans on Tier-1 pHash; the FSM is unchanged.</td>
+</tr>
+<tr>
+<td><strong>Grid fractures a modal across cells</strong> — one UI element spanning 4 grid cells → 4 events.</td>
+<td><code>coalesce_window_ms</code> merges adjacent-cell changes; escalate to <code>blocks</code> mode only if recall demands it. See <a href="policy-engine.html#5-anti-spam-coalescing">Policy Engine §5</a>.</td>
+</tr>
+<tr>
+<td><strong>False negatives &gt; false positives for agents</strong> — a missed "build finished" costs more than a spurious "region changed."</td>
+<td>Optimize the harness for <strong>recall first, emission-rate second</strong>.</td>
+</tr>
+<tr>
+<td><strong>Wayland capture is fiddly</strong></td>
+<td>Don't start there; <code>PollBackend</code> first, PipeWire as a Phase-3 optimization.</td>
+</tr>
+<tr>
+<td><strong>Schema churn breaks consumers</strong></td>
+<td>Freeze <code>v</code> / <code>StateSettle</code> before v0.1.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-why-these-two-risk-lists-overlap">4. Why these two risk lists overlap</h2>
+<p>The product and engineering lists repeat "tuning is empirical," "macOS/Wayland capture," and "schema freeze" on purpose — these are the points where a <em>product</em> concern and an <em>engineering</em> concern are the same fact seen from two sides. The repetition is a signal of where to spend attention, not redundancy to trim.</p>
+<hr />
+<h2 id="5-open-decisions-resolve-during-phase-01">5. Open decisions (resolve during Phase 0–1)</h2>
+<p>These are deliberately <strong>not</strong> decided yet; the harness and the first live sessions are expected to settle them.</p>
+<ol>
+<li><strong>Region model</strong> — fixed <code>grid</code> (start) vs semantic <code>blocks</code> (defer). <em>Decided by:</em> whether grid recall is good enough in the harness.</li>
+<li><strong>Capture priority beyond Linux</strong> — Windows DXGI (has damage, easy win) vs macOS (no damage, more work). <em>Decided by:</em> target users + effort.</li>
+<li><strong>Store</strong> — <code>rusqlite</code> standalone vs <code>ctxgraph</code> as the primary sink from day one. <em>Decided by:</em> how tightly the bi-temporal memory story couples in early.</li>
+<li><strong>MCP transport default</strong> — <code>stdio</code> (single agent) vs SSE (daemon with subscribers). <em>Decided by:</em> the dominant consumer shape in Phase 1.</li>
+<li><strong>Final name + crate publish identity</strong> — <strong>resolved: <code>veyo</code></strong> (the retired alternative was <code>veyl</code>; <code>fovea</code> was taken on crates.io). The daemon is <code>veyod</code>, the config is <code>veyo.toml</code>.</li>
+</ol>
+<hr />
+<h2 id="6-the-freeze-list-lock-before-v01">6. The freeze list (lock before v0.1)</h2>
+<p>Two things must be frozen before the first release because downstream agents bind to them:</p>
+<ul>
+<li>the schema version field <strong><code>v</code></strong> and its semantics</li>
+<li>the <strong><code>state_settle</code></strong> event shape (<code>duration_ms</code>, the surface/region refs)</li>
+</ul>
+<p>Freezing these is itself a <a href="privacy-model.html#compliance">privacy/compliance guarantee</a>: a stable, versioned, text-only contract is what makes the bi-temporal audit log meaningful over time.</p>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The plan built around retiring risk #1 first: <strong><a href="plan.html">Build Plan</a></strong>.</li>
+<li>The instrument that retires it: <strong><a href="eval-harness.html">Eval Harness</a></strong>.</li>
+<li>The trait that isolates the capture risks: <strong><a href="architecture.html#capture-backends">Architecture</a></strong> / <strong><a href="tech-specs.html#capture-backend-trait">Tech Specs</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>risks-and-open-questions.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

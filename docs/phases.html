@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from phases.md, do not edit">
+<title>veyo — phases & roadmap · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a class="active" href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-v1-scope-mvp">1. v1 scope (MVP)</a><ul>
+<li><a href="#in">In</a></li>
+<li><a href="#out-later">Out (later)</a></li>
+</ul>
+</li>
+<li><a href="#2-the-phased-roadmap">2. The phased roadmap</a></li>
+<li><a href="#3-phase-detail">3. Phase detail</a><ul>
+<li><a href="#phase-0-validate-next-up">Phase 0 — Validate next up</a></li>
+<li><a href="#phase-1-live-mvp">Phase 1 — Live MVP</a></li>
+<li><a href="#phase-2-tune-habituate">Phase 2 — Tune &amp; habituate</a></li>
+<li><a href="#phase-3-optimize-enrich">Phase 3 — Optimize &amp; enrich</a></li>
+<li><a href="#phase-4-expand">Phase 4 — Expand</a></li>
+</ul>
+</li>
+<li><a href="#4-timebox-solo-rough">4. Timebox (solo, rough)</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-phases-roadmap">veyo — phases &amp; roadmap</h1>
+<blockquote>
+<p>The execution plan: the v1 MVP scope, the phased roadmap with success gates, and timeboxes. For <em>why</em> it's ordered this way, see the <a href="plan.html">Build Plan</a>.</p>
+</blockquote>
+<hr />
+<h2 id="1-v1-scope-mvp">1. v1 scope (MVP)</h2>
+<h3 id="in">In</h3>
+<ul>
+<li>one screen/display source, one platform (<strong>Wayland first</strong>, via the trivial <code>PollBackend</code>)</li>
+<li>grid-region change detection (Tier-1: cheap diff + pHash)</li>
+<li>the settle/debounce FSM</li>
+<li>salience scoring + habituation</li>
+<li>event kinds: <code>focus_change</code>, <code>surface_open/close</code>, <code>region_change</code>, <code>state_settle</code>, <code>idle/active</code></li>
+<li>MCP <code>subscribe_events</code> + <code>get_current_state</code> + <code>query_events</code></li>
+<li>sqlite (or <code>ctxgraph</code>) bi-temporal log</li>
+<li><code>veyo.toml</code> thresholds</li>
+</ul>
+<h3 id="out-later">Out (later)</h3>
+<ul>
+<li>camera source; presence/activity; <strong>any safety/eldercare claim</strong></li>
+<li>Tier-2 semantic tagging / OCR enrichment (<strong>stub the interface, ship off</strong>)</li>
+<li>multi-display, <code>blocks</code> region mode, <code>anomaly</code> events</li>
+<li>bundled local-LLM reasoning; CloakPipe PII routing</li>
+<li>non-Wayland capture backends</li>
+</ul>
+<p>The discipline here matters: v1 ships the <strong>codec proven by the harness</strong>, plus the thinnest live wiring that lets a real agent consume it. Everything tempting-but-heavier (Tier-2, blocks mode, camera) is deferred behind interfaces that are stubbed now.</p>
+<hr />
+<h2 id="2-the-phased-roadmap">2. The phased roadmap</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Deliverable</th>
+<th>Success gate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0 — Validate</strong></td>
+<td><a href="tech-specs.html#core-data-model"><code>veyo-core</code></a> (schema, FSM, salience stub) + <a href="eval-harness.html"><code>veyo-eval</code></a> running offline on recorded sessions</td>
+<td><strong>recall ≥0.9 @ &lt;1% emission on ≥3 sessions, CPU-only</strong></td>
+</tr>
+<tr>
+<td><strong>1 — Live MVP</strong></td>
+<td><code>PollBackend</code> (xcap/scap) + core + <a href="architecture.html#mcp-surface"><code>veyo-mcp</code></a> stream; the <code>veyod</code> binary</td>
+<td>a local LLM subscribes over MCP and reacts to real on-screen events <strong>live</strong></td>
+</tr>
+<tr>
+<td><strong>2 — Tune &amp; habituate</strong></td>
+<td>full habituation/novelty wired; defaults locked from the harness</td>
+<td>survives a video/spinner-heavy session <strong>without spamming</strong>; anomaly (pattern-break) fires correctly</td>
+</tr>
+<tr>
+<td><strong>3 — Optimize &amp; enrich</strong></td>
+<td><code>PipewireBackend</code> (damage/DMA-BUF) + <a href="tech-specs.html#storage"><code>veyo-store</code></a> (sqlite/ctxgraph) + optional Tier-2</td>
+<td>&lt;X% CPU on the damage path; <code>query_events</code> + <code>describe_region</code> work</td>
+</tr>
+<tr>
+<td><strong>4 — Expand</strong></td>
+<td>CloakPipe summary routing; <code>region_mode=blocks</code> (YOLO); camera source; Win/macOS backends</td>
+<td>regulated-deploy story (text-only + PII-sanitized); cross-platform parity</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-phase-detail">3. Phase detail</h2>
+<h3 id="phase-0-validate-next-up">Phase 0 — Validate <span class="pill next">next up</span></h3>
+<p>The whole bet, tested cheaply. Build only <a href="policy-engine.html"><code>veyo-core</code></a> and the <a href="eval-harness.html">eval harness</a>; no capture, no daemon. Record ≥3 real sessions, annotate them, grid-search the four knobs, and see whether the gate is reachable. <strong>If not, the thesis fails here — by design.</strong></p>
+<h3 id="phase-1-live-mvp">Phase 1 — Live MVP</h3>
+<p>Make it real-time. Add the trivial cross-platform <code>PollBackend</code> (grab a frame at <code>capture_fps</code>, no damage info) and the <code>veyo-mcp</code> streaming surface, wire them through <code>veyod</code>. Success is qualitative and concrete: <strong>a local LLM subscribes over MCP and visibly reacts to on-screen events as they happen.</strong></p>
+<h3 id="phase-2-tune-habituate">Phase 2 — Tune &amp; habituate</h3>
+<p>The long pole. Wire the full habituation/novelty model, lock the defaults the harness produced, and stress it: a session full of video and spinners must not flood the stream, while a <em>pattern-break</em> inside a habituated region (the spinner stops, an error flashes) must still fire. See <a href="policy-engine.html#habituation">Policy Engine §4</a>.</p>
+<h3 id="phase-3-optimize-enrich">Phase 3 — Optimize &amp; enrich</h3>
+<p>Now make it cheap and durable. Add the <code>PipewireBackend</code> for compositor <strong>damage rects</strong> (skip untouched regions for ~free) and DMA-BUF zero-copy; add <code>veyo-store</code> (sqlite/FTS5 + the ctxgraph adapter); and turn on the optional Tier-2 enrichment path so <code>describe_region</code> returns semantic text. The capture-trait decoupling means none of this touches the FSM.</p>
+<h3 id="phase-4-expand">Phase 4 — Expand</h3>
+<p>Open-ended. CloakPipe routing for cloud consumers (the <a href="privacy-model.html#compliance">regulated-deploy story</a>); <code>blocks</code> region mode (YOLO-detected UI blocks instead of a fixed grid) <em>if recall demands it</em>; the camera source; and the Windows DXGI / macOS ScreenCaptureKit backends for cross-platform parity.</p>
+<hr />
+<h2 id="4-timebox-solo-rough">4. Timebox (solo, rough)</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Estimate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 — Validate</td>
+<td>~1–2 weeks</td>
+</tr>
+<tr>
+<td>1 — Live MVP</td>
+<td>~2 weeks</td>
+</tr>
+<tr>
+<td>2 — Tune &amp; habituate</td>
+<td>~2–3 weeks (<strong>long pole</strong>)</td>
+</tr>
+<tr>
+<td>3 — Optimize &amp; enrich</td>
+<td>~3–4 weeks</td>
+</tr>
+<tr>
+<td>4 — Expand</td>
+<td>open-ended</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>Estimates are guidance. The <strong>Phase-0 gate</strong> is the real governor: Phase 1 does not begin until the codec is proven on recorded sessions.</p>
+</blockquote>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>Why this order (the sequencing rule): <strong><a href="plan.html">Build Plan</a></strong>.</li>
+<li>The gate that governs Phase 0→1: <strong><a href="eval-harness.html">Eval Harness</a></strong>.</li>
+<li>The decisions still open as these phases begin: <strong><a href="risks-and-open-questions.html">Risks &amp; Open Questions</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>phases.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

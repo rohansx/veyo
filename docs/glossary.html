@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from glossary.md, do not edit">
+<title>veyo — glossary · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a class="active" href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+
+<h1 id="veyo-glossary">veyo — glossary</h1>
+<blockquote>
+<p>Every term of art in one place. Where a term has a home doc, it links there.</p>
+</blockquote>
+<hr />
+<p><strong>Anomaly</strong> — an <code>EventKind</code> (v2, optional): a change inconsistent with a region's recent baseline. A pattern-break that habituation surfaces rather than suppresses. See <a href="policy-engine.html#habituation">Policy Engine</a>.</p>
+<p><strong>Baseline (<code>NoveltyBaseline</code>)</strong> — a region's rolling estimate of how often it changes. Drives habituation: a region that changes constantly has a high baseline and low novelty. See <a href="policy-engine.html#habituation">Policy Engine</a>.</p>
+<p><strong>Bi-temporal</strong> — carrying two timestamps: <code>t_event</code> (when it happened on screen) and <code>t_observed</code> (when the codec emitted it). The shape <code>ctxgraph</code> ingests and the basis of the compliance audit log. See <a href="product-overview.html#33-the-bi-temporal-axis">Product Overview</a>.</p>
+<p><strong>Coalescing</strong> — merging concurrent low-salience changes (across adjacent grid cells, or globally per <code>coalesce_window_ms</code>) into one macro-event, so a modal spanning 4 cells doesn't become 4 events. See <a href="policy-engine.html#5-anti-spam-coalescing">Policy Engine</a>.</p>
+<p><strong><code>ctxgraph</code></strong> — the external bi-temporal knowledge store <code>veyo</code> writes deltas into as its event log / long-term memory layer.</p>
+<p><strong>CloakPipe</strong> — the text-layer PII gate. Optional; routes summaries through redaction before they reach a <em>cloud</em> LLM consumer. See <a href="privacy-model.html#5-cloud-consumers-cloakpipe">Privacy Model</a>.</p>
+<p><strong>Damage / dirty-rects</strong> — OS/compositor-provided rectangles marking which parts of the screen changed. Free change detection on Wayland (PipeWire) and Windows (DXGI); absent on macOS. Consumed via the <a href="tech-specs.html#capture-backend-trait"><code>CaptureBackend</code> trait</a>.</p>
+<p><strong>Delta</strong> — a single typed, bi-temporal, compact event record — the unit of the output stream. Schema in <a href="tech-specs.html#delta-schema">Tech Specs</a>.</p>
+<p><strong><code>describe_region(region_id)</code></strong> — the MCP tool that lazily runs Tier-2 enrichment on one region and returns <strong>text only, never the image</strong>. The privacy-preserving detail escape hatch. See <a href="privacy-model.html#4-the-describe_region-escape-hatch">Privacy Model</a>.</p>
+<p><strong><code>epsilon_noise</code></strong> — Gate-1 per-region diff floor: below it, a region counts as "not changing." A tuning knob. See <a href="policy-engine.html">Policy Engine</a>.</p>
+<p><strong>Evidence</strong> — the <strong>local-only</strong> part of a delta: a perceptual hash (<code>phash</code>) + a thumbnail reference (<code>thumb_ref</code>). Type-fenced so it can never be serialized onto the wire. See <a href="privacy-model.html#3-enforced-by-the-type-system-not-by-discipline">Privacy Model</a>.</p>
+<p><strong>Emission rate</strong> — emitted events ÷ frames captured. The constraint in tuning (target &lt; ~1% of frames); recall is the objective. See <a href="eval-harness.html#4-scoring">Eval Harness</a>.</p>
+<p><strong>Focus weight (<code>focus_weight</code>)</strong> — salience multiplier applied to regions in the focused surface, so foreground always outranks background.</p>
+<p><strong>FSM (debounce / settle)</strong> — the per-region finite state machine <code>STATIC → CHANGING → SETTLING → STATIC</code> that turns a burst of frames into a start event and a settle event. See <a href="policy-engine.html#per-region-finite-state-machine">Policy Engine</a>.</p>
+<p><strong>Gate 1 / Gate 2</strong> — the two cost-ordered emission filters: Gate 1 is the cheap per-region diff (<code>epsilon_noise</code>); Gate 2 is the salience threshold (<code>salience_min</code>). See <a href="policy-engine.html#1-the-pipeline">Policy Engine</a>.</p>
+<p><strong>Habituation</strong> — the rising suppression of repetitive change, driving <code>novelty → 0</code> for spinners/video/blinking cursors. Reversible: a broken pattern spikes novelty back to ~1. The hard-to-copy differentiator. See <a href="policy-engine.html#habituation">Policy Engine</a>.</p>
+<p><strong>Magnitude</strong> — the normalized diff (pHash distance / SAD) for a region; a factor in salience.</p>
+<p><strong>MCP</strong> — Model Context Protocol; the transport over which <code>veyo</code> exposes its stream and query tools (via <code>rmcp</code>). See <a href="architecture.html#mcp-surface">Architecture</a>.</p>
+<p><strong>Novelty</strong> — <code>1 − habituation</code> ∈ [0,1]; the inverse of how expected a region's change is. A factor in salience and a field on every delta.</p>
+<p><strong><code>PollBackend</code></strong> — the Phase-1 capture backend: grab a full frame at <code>capture_fps</code>, no damage info. Trivial and cross-platform. See <a href="architecture.html#capture-backends">Architecture</a>.</p>
+<p><strong><code>PipewireBackend</code></strong> — the Phase-3 Linux/Wayland capture backend: XDG ScreenCast portal + DMA-BUF zero-copy + compositor damage rects.</p>
+<p><strong>Recall</strong> — annotated "things that mattered" that <code>veyo</code> caught ÷ total annotations. <strong>The primary success metric</strong> (false negatives hurt agents most). See <a href="eval-harness.html#4-scoring">Eval Harness</a>.</p>
+<p><strong>Region</strong> — a spatial zone within the focused surface; a grid cell in v1 (<code>blocks</code> = detected UI blocks in v2). Each region runs its own FSM and baseline.</p>
+<p><strong>Ring buffer</strong> — the bounded <strong>in-memory</strong> store where raw frames live transiently and are overwritten — never persisted to disk by default. The root of the privacy posture. See <a href="privacy-model.html#1-privacy-invariants-non-negotiable">Privacy Model</a>.</p>
+<p><strong>Salience</strong> — <code>w_focus · magnitude · novelty</code> ∈ [0,1]; how much a downstream consumer should care. Emission requires <code>salience ≥ salience_min</code>. See <a href="policy-engine.html#salience">Policy Engine</a>.</p>
+<p><strong><code>state_settle</code></strong> — the event fired when a region holds static past <code>settle_window_ms</code>. The <strong>key compression</strong>: a 2-second scroll/load becomes 2 events, not 60 frames. Often the most useful event. See <a href="policy-engine.html#per-region-finite-state-machine">Policy Engine</a>.</p>
+<p><strong>Surface</strong> — a window/app in the world-state (id, app, title, focused?, bounds).</p>
+<p><strong>Settle window (<code>settle_window_ms</code>)</strong> — how long a region must hold static before <code>state_settle</code> fires. A tuning knob.</p>
+<p><strong>Tier-1</strong> — the cheap, always-on path: downscale + perceptual hash/SAD diff. Runs on every candidate frame, on CPU.</p>
+<p><strong>Tier-2</strong> — the optional, gated enrichment path: UI tagging / OCR via <code>ort</code>, run only on events that pass both gates, on a single region's thumbnail. Off by default. See <a href="tech-specs.html#tier-2-enrichment">Tech Specs</a>.</p>
+<p><strong><code>veyod</code></strong> — the daemon binary that wires capture → core → MCP → store.</p>
+<p><strong>World-state</strong> — the compact, always-current text model of the scene (surfaces, regions, per-region activity + baseline). Queryable via <code>get_current_state()</code>. See <a href="product-overview.html#31-world-state">Product Overview</a>.</p>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The data shapes behind these terms: <strong><a href="tech-specs.html">Tech Specs</a></strong>.</li>
+<li>The logic that uses them: <strong><a href="policy-engine.html">Policy Engine</a></strong>.</li>
+<li>The index: <strong><a href="index.html">Overview</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>glossary.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

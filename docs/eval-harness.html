@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from eval-harness.md, do not edit">
+<title>veyo — eval harness (Phase 0, build this first) · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a class="active" href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-what-it-is">1. What it is</a></li>
+<li><a href="#2-recording-format">2. Recording format</a></li>
+<li><a href="#3-annotation-schema">3. Annotation schema</a></li>
+<li><a href="#4-scoring">4. Scoring</a></li>
+<li><a href="#tuning-loop">5. The tuning loop</a></li>
+<li><a href="#6-the-phase-0-success-gate">6. The Phase-0 success gate</a></li>
+<li><a href="#7-why-this-de-risks-everything">7. Why this de-risks everything</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-eval-harness-phase-0-build-this-first">veyo — eval harness (Phase 0, build this first)</h1>
+<blockquote>
+<p>The single most important artifact in the whole project. The daemon is the <em>known</em> part — every piece is a mature crate. The <em>unknown</em> part, the only thing that can kill the product, is whether the four tuning knobs can be set so the codec emits on what matters and stays silent otherwise, on real footage. <strong>So we test that before building the thing.</strong> See the <a href="plan.html">Build Plan</a> for the sequencing rule this embodies.</p>
+</blockquote>
+<p>The harness runs <code>veyo-core</code> <strong>offline on recorded sessions</strong> — zero live capture, zero daemon. If the recall/emission numbers can't be hit here, you stop, having spent <strong>days, not months</strong>.</p>
+<hr />
+<h2 id="1-what-it-is">1. What it is</h2>
+<p><code>veyo-eval</code> replays recorded screen sessions through the pure <a href="tech-specs.html#core-data-model"><code>veyo-core</code></a> pipeline (diff → FSM → salience → habituation), collects the deltas it <em>would</em> emit, and scores them against a human annotation of "things that mattered." It is also the <strong>integration test</strong> that runs in CI so recall can never silently regress.</p>
+<p>Because <code>veyo-core</code> does no I/O, the harness needs no capture backend and no MCP server — it feeds frames straight in and reads deltas straight out.</p>
+<hr />
+<h2 id="2-recording-format">2. Recording format</h2>
+<p>A <strong>session</strong> = a video file (or a PNG frame dump) + a sidecar <code>frames.jsonl</code>:</p>
+<pre><code class="language-json">{ &quot;frame_idx&quot;: 0, &quot;t_ms&quot;: 0 }
+{ &quot;frame_idx&quot;: 1, &quot;t_ms&quot;: 250 }
+</code></pre>
+<p>Capture with <strong>any</strong> screen recorder; the harness only needs frames + timestamps. Store under:</p>
+<pre><code>fixtures/sessions/&lt;name&gt;/
+├── frames/                # or a single video file
+├── frames.jsonl          # {frame_idx, t_ms}
+└── annotations.jsonl     # the ground truth (below)
+</code></pre>
+<hr />
+<h2 id="3-annotation-schema">3. Annotation schema</h2>
+<p><code>&lt;name&gt;/annotations.jsonl</code>, one line per "thing that mattered":</p>
+<pre><code class="language-json">{ &quot;t_ms&quot;: 252100, &quot;kind&quot;: &quot;build_finished&quot;, &quot;surface&quot;: &quot;terminal&quot;, &quot;note&quot;: &quot;cargo build done&quot; }
+</code></pre>
+<p>Aim for <strong>30–60 annotations per recorded hour</strong>. Annotate the events an agent would care about: a modal appeared, a build finished, an error was shown, an app switch happened, a long job errored.</p>
+<hr />
+<h2 id="4-scoring">4. Scoring</h2>
+<p>Run <code>veyo-core</code> over the frames, collect emitted deltas, then compute:</p>
+<table>
+<thead>
+<tr>
+<th>metric</th>
+<th>definition</th>
+<th>why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>recall</strong></td>
+<td>annotated events with a matching emission within <code>±match_tolerance_ms</code> ÷ total annotations</td>
+<td><strong>the number that matters most</strong> — false negatives hurt agents more than false positives</td>
+</tr>
+<tr>
+<td><strong>precision / emission rate</strong></td>
+<td>matched emissions ÷ total emissions; plus raw events/hour</td>
+<td>is the stream noisy?</td>
+</tr>
+<tr>
+<td><strong>cost</strong></td>
+<td>CPU time, peak RSS, total summary tokens</td>
+<td>is it actually cheap, on CPU, bounded RSS?</td>
+</tr>
+</tbody>
+</table>
+<p>Output a <strong>one-page report per session</strong> plus an aggregate across sessions.</p>
+<blockquote>
+<p><strong>Recall is the primary objective; emission-rate is the constraint.</strong> For an agent, missing "the build finished" is worse than one spurious "a region changed." Optimize accordingly — see <a href="risks-and-open-questions.html">Risks</a>.</p>
+</blockquote>
+<hr />
+<h2 id="tuning-loop">5. The tuning loop</h2>
+<p>Treat the four knobs — <code>epsilon_noise</code>, <code>settle_window_ms</code>, <code>salience_min</code>, <code>novelty_decay</code> — as <strong>hyperparameters</strong>, not constants.</p>
+<ol>
+<li><strong>Coarse grid search</strong> over <code>epsilon_noise × settle_window_ms × salience_min × novelty_decay</code>, maximizing recall <strong>subject to an emission-rate ceiling</strong>.</li>
+<li><strong>Refine with Bayesian optimization</strong> if the grid is too slow.</li>
+<li><strong>Lock the winning defaults</strong> into <a href="tech-specs.html#config"><code>veyo.toml</code></a>.</li>
+<li><strong>Keep the sessions as CI fixtures</strong> so future changes can't silently regress recall.</li>
+</ol>
+<p>The habituation behavior must be <strong>exercised hard</strong> here: a video/spinner-heavy session must not spam (novelty decays to silence), <em>and</em> a pattern-break inside a habituated region must still fire (novelty spikes back). See the <a href="policy-engine.html#habituation">Policy Engine</a>.</p>
+<hr />
+<h2 id="6-the-phase-0-success-gate">6. The Phase-0 success gate</h2>
+<blockquote>
+<p>On <strong>≥3 real recorded sessions</strong>, hit <strong>recall ≥ ~0.9</strong> at <strong>emission &lt; ~1% of frames</strong>, on <strong>CPU</strong>.</p>
+</blockquote>
+<p>If that is reachable, the thesis holds and everything after is incremental hardening of a thing already proven to work in principle. <strong>If it is unreachable, the thesis fails cheaply — and that is the entire point of doing this first.</strong></p>
+<hr />
+<h2 id="7-why-this-de-risks-everything">7. Why this de-risks everything</h2>
+<ul>
+<li>It tests the <strong>riskiest assumption</strong> (tuning) with the <strong>cheapest possible build</strong> (no capture, no daemon, no MCP).</li>
+<li>It produces the <strong>real config defaults</strong> that the <a href="tech-specs.html#config">Tech Specs</a> ship with.</li>
+<li>It becomes the <strong>permanent regression test</strong>: the same fixtures run in CI, so a refactor that quietly drops recall fails the build (see <a href="plan.html#testing-strategy">Testing in the Build Plan</a>).</li>
+</ul>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The pipeline being scored: <strong><a href="policy-engine.html">Policy Engine</a></strong>.</li>
+<li>The philosophy behind building this first: <strong><a href="plan.html">Build Plan</a></strong>.</li>
+<li>Where Phase 0 sits and what unblocks once it passes: <strong><a href="phases.html">Phases &amp; Roadmap</a></strong>.</li>
+<li>The types it drives: <strong><a href="tech-specs.html#core-data-model">Tech Specs</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>eval-harness.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

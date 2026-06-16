@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from policy-engine.md, do not edit">
+<title>veyo — policy engine (the "meaningful change" codec) · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a class="active" href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-the-pipeline">1. The pipeline</a></li>
+<li><a href="#per-region-finite-state-machine">2. Per-region finite state machine</a><ul>
+<li><a href="#why-state_settle-is-the-workhorse">Why state_settle is the workhorse</a></li>
+</ul>
+</li>
+<li><a href="#salience">3. Salience</a></li>
+<li><a href="#habituation">4. Habituation / novelty</a><ul>
+<li><a href="#dynamic-not-just-decaying">Dynamic, not just decaying</a></li>
+</ul>
+</li>
+<li><a href="#5-anti-spam-coalescing">5. Anti-spam / coalescing</a></li>
+<li><a href="#6-the-tunable-knobs">6. The tunable knobs</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-policy-engine-the-meaningful-change-codec">veyo — policy engine (the "meaningful change" codec)</h1>
+<blockquote>
+<p><strong>This is the real IP.</strong> Everything else — capture, storage, MCP — is a mature, known quantity. The thing that can <em>make or kill</em> the product is whether this policy can be tuned to emit on what matters and stay silent otherwise, on real footage. That is exactly what the <a href="eval-harness.html">Eval Harness</a> is built first to prove.</p>
+</blockquote>
+<p>The policy is a per-region pipeline, ordered <strong>cheap → expensive, short-circuiting early</strong>. Most frames die at the first gate having done almost no work.</p>
+<hr />
+<h2 id="1-the-pipeline">1. The pipeline</h2>
+<pre><code>              ┌─────────── frame (low fps / OS damage event) ───────────┐
+              ▼
+   [Capture]  low-fps grab OR compositor dirty-rect/damage event
+              ▼
+   [Gate 1: cheap diff]   per-region downscaled pHash / SAD
+              │  diff &lt; epsilon_noise  ──► DROP (no work, no event)   ~99% of frames
+              ▼
+   [Settle/debounce FSM]  STATIC → CHANGING → SETTLING → STATIC
+              │  emit region_change on STATIC→CHANGING
+              │  emit state_settle  on SETTLING→STATIC (held &gt; settle_window)
+              ▼
+   [Gate 2: salience]     score = f(region_weight, magnitude, novelty)
+              │  salience &lt; salience_min  ──► log internally, do NOT emit upstream
+              ▼
+   [Tier 2 enrichment]    OPTIONAL, only on passing events:
+                          run UI tagger / OCR on THIS region only → semantic summary
+              ▼
+   [State update + emit]  update world-state, emit delta over MCP, append to ctxgraph
+</code></pre>
+<p>Two gates, in order of cost:</p>
+<ul>
+<li><strong>Gate 1 — cheap diff.</strong> A per-region downscaled perceptual hash / SAD. <code>diff &lt; epsilon_noise</code> ⇒ <strong>drop</strong>, no work, no event. This catches ~99% of frames.</li>
+<li><strong>Gate 2 — salience.</strong> Only changes that survive the FSM are scored. <code>salience &lt; salience_min</code> ⇒ logged internally but <strong>not emitted upstream</strong>.</li>
+</ul>
+<p>Tier-2 ML enrichment, when enabled at all, runs <strong>only</strong> on events that pass <em>both</em> gates — so the expensive model sees a region a few dozen times an hour, never per-frame.</p>
+<hr />
+<h2 id="per-region-finite-state-machine">2. Per-region finite state machine</h2>
+<p>States: <code>STATIC</code>, <code>CHANGING</code>, <code>SETTLING</code>. Evaluated per region, on each candidate frame.</p>
+<table>
+<thead>
+<tr>
+<th>From</th>
+<th>Trigger</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Static</code></td>
+<td>diff &gt; <code>epsilon_noise</code></td>
+<td>→ <code>Changing</code>; record <code>changing_since</code>; emit <code>region_change</code> <em>(if salience passes)</em></td>
+</tr>
+<tr>
+<td><code>Changing</code></td>
+<td>diff &lt; <code>epsilon_noise</code></td>
+<td>→ <code>Settling</code>; arm <code>settle_deadline = now + settle_window_ms</code></td>
+</tr>
+<tr>
+<td><code>Settling</code></td>
+<td><code>settle_deadline</code> elapsed</td>
+<td>→ <code>Static</code>; emit <code>state_settle { duration_ms }</code> <em>(if salience passes)</em></td>
+</tr>
+<tr>
+<td><code>Settling</code></td>
+<td>diff &gt; <code>epsilon_noise</code></td>
+<td>→ <code>Changing</code>; cancel deadline; <strong>no emission</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="why-state_settle-is-the-workhorse">Why <code>state_settle</code> is the workhorse</h3>
+<p><code>state_settle</code> is the <strong>key compression</strong>: a 2-second scroll / animation / page-load collapses to <strong>two events</strong> (start + settle), not 60 frames. It is also frequently the <em>most useful</em> event to an agent — "the page finished loading", "the build is done", "the dialog stopped animating" are all settles.</p>
+<p>Implement the deadlines with <code>tokio::time</code> timers keyed by <code>RegionId</code>. The <code>state_settle</code> shape is <strong>frozen before v0.1</strong> because downstream agents bind to it — see <a href="risks-and-open-questions.html">Risks &amp; Open Questions</a>.</p>
+<hr />
+<h2 id="salience">3. Salience</h2>
+<p>The "too sensitive vs too lax" control surface. Salience gates emission:</p>
+<pre><code>salience = w_focus(region) * magnitude * novelty
+emit if salience &gt;= salience_min
+</code></pre>
+<ul>
+<li><strong><code>magnitude</code></strong> = normalized diff — mean absolute difference over the downscaled cell, in <code>[0,1]</code> (see <code>veyo-core::diff</code>).</li>
+<li><strong><code>w_focus</code></strong> = <code>focus_weight</code> if the region is in the focused surface, else <code>1.0</code>. Focused-surface events are always weighted above background.</li>
+<li><strong><code>novelty</code></strong> = <code>1 - habituation</code> (below).</li>
+</ul>
+<p>The output lands in <code>Delta.salience ∈ [0,1]</code>; consumers filter on it via <code>min_salience</code> in <a href="architecture.html#mcp-surface"><code>subscribe_events</code></a>.</p>
+<hr />
+<h2 id="habituation">4. Habituation / novelty</h2>
+<blockquote>
+<p><strong>The differentiator — and the part that's genuinely hard to copy.</strong></p>
+</blockquote>
+<p>Each region keeps a <strong>rolling estimate of how often it changes</strong> (<code>NoveltyBaseline</code>). Repetitive, periodic change — a video playing, a blinking cursor, a spinner — drives <code>novelty → 0</code>, so its events get low salience, fall below <code>salience_min</code>, and <strong>the stream stops spamming</strong>. A <em>new</em> kind of change (a modal, an app switch, a content region that's been static suddenly moving) scores high novelty.</p>
+<p>The decay follows a stretched-exponential-style curve — but <strong>treat the exact law as a tunable, not gospel</strong> (<code>novelty_decay</code>).</p>
+<h3 id="dynamic-not-just-decaying">Dynamic, not just decaying</h3>
+<p>The crucial property: habituation is <strong>reversible</strong>. If a habituated pattern <em>breaks</em> — the blinking cursor stops, a static editor suddenly flashes a red error — <code>novelty</code> spikes back to ~1 and the event fires. This pattern-break spike is what lets <code>veyo</code> habituate to noise without going deaf to the <em>meaningful</em> repeated event.</p>
+<p>This is the anti-spam moat, and it must be <strong>exercised hard in the eval harness</strong> — specifically: a video/spinner-heavy session must not spam, <em>and</em> a pattern-break inside a habituated region must still fire.</p>
+<blockquote>
+<p>Conceptually adjacent to a successor-representation / predictive-novelty model — cf. <code>primd</code>.</p>
+</blockquote>
+<hr />
+<h2 id="5-anti-spam-coalescing">5. Anti-spam / coalescing</h2>
+<blockquote>
+<p><strong>Status: planned (Phase-1+).</strong> Coalescing is specified here but is <strong>not</strong> in the
+Phase-0 <code>veyo-core</code> engine yet. Today the FSM's own compression (continuous change →
+one event) and the salience gate carry the anti-spam load; the per-region grid in v1
+rarely fractures, so coalescing earns its keep only once <code>blocks</code> mode or multi-surface
+arrives.</p>
+</blockquote>
+<ul>
+<li>A <strong>global rate cap</strong> per <code>coalesce_window_ms</code>. Excess low-salience events merge into one coalesced summary — <em>"3 background regions changed"</em>.</li>
+<li><strong>Adjacent-cell coalescing.</strong> A modal that spans 4 grid cells would naively produce 4 <code>region_change</code> events; <code>coalesce_window_ms</code> merges concurrent low-salience changes across adjacent grid cells into one macro-event. (This is also the main mitigation for grid mode "fracturing" a UI element — see <a href="risks-and-open-questions.html">Risks</a>.)</li>
+<li><strong>Focus always wins.</strong> Focused-surface events are weighted above background, so coalescing never swallows the thing the user is actually looking at.</li>
+</ul>
+<hr />
+<h2 id="6-the-tunable-knobs">6. The tunable knobs</h2>
+<p>These four are <strong>hyperparameters</strong>, not constants. Their values come from the <a href="eval-harness.html">Eval Harness</a>, not from intuition.</p>
+<table>
+<thead>
+<tr>
+<th>knob</th>
+<th>role in the policy</th>
+<th>starting default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>epsilon_noise</code></td>
+<td>Gate-1 diff floor — below this, a region is "not changing"</td>
+<td>0.03 (mean abs diff, <code>[0,1]</code>)</td>
+</tr>
+<tr>
+<td><code>settle_window_ms</code></td>
+<td>how long a region must hold static before <code>state_settle</code> fires</td>
+<td>400</td>
+</tr>
+<tr>
+<td><code>salience_min</code></td>
+<td>Gate-2 emit threshold</td>
+<td>0.4</td>
+</tr>
+<tr>
+<td><code>novelty_decay</code></td>
+<td>how fast a repetitive region habituates toward silence</td>
+<td>0.9 / window</td>
+</tr>
+</tbody>
+</table>
+<p>Supporting knobs: <code>focus_weight</code> (1.5), <code>coalesce_window_ms</code> (1000), <code>capture_fps</code> (4), <code>region_mode</code> (<code>grid</code>). Full list in <a href="tech-specs.html#knob-reference">Tech Specs</a>.</p>
+<p><strong>The engineering work is finding the settings</strong> where recall stays high (the agent doesn't miss what matters) while emission stays under ~1% of frames (the stream isn't noise). There is no closed form; it is treated as an ML tuning problem. See the <a href="eval-harness.html#tuning-loop">tuning loop</a>.</p>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The types this logic operates on (<code>Phase</code>, <code>RegionState</code>, <code>Delta</code>, <code>NoveltyBaseline</code>): <strong><a href="tech-specs.html#core-data-model">Tech Specs</a></strong>.</li>
+<li>Where this sits in the running system: <strong><a href="architecture.html">Architecture</a></strong>.</li>
+<li>How we prove it actually works before building a daemon: <strong><a href="eval-harness.html">Eval Harness</a></strong>.</li>
+<li>The risks specific to tuning and to grid regions: <strong><a href="risks-and-open-questions.html">Risks &amp; Open Questions</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>policy-engine.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

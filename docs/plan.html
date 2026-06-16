@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from plan.md, do not edit">
+<title>veyo — build plan · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a class="active" href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-the-sequencing-rule">1. The sequencing rule</a></li>
+<li><a href="#2-why-this-ordering">2. Why this ordering</a></li>
+<li><a href="#3-build-order-summary">3. Build order (summary)</a></li>
+<li><a href="#testing-strategy">4. Testing strategy</a><ul>
+<li><a href="#unit-veyo-core">Unit (veyo-core)</a></li>
+<li><a href="#integration-the-eval-harness-is-the-integration-test">Integration (the eval harness is the integration test)</a></li>
+<li><a href="#bench-criterion">Bench (criterion)</a></li>
+</ul>
+</li>
+<li><a href="#5-treat-tuning-as-ml-not-intuition">5. Treat tuning as ML, not intuition</a></li>
+<li><a href="#6-rough-timebox-solo">6. Rough timebox (solo)</a></li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-build-plan">veyo — build plan</h1>
+<blockquote>
+<p>The build <em>philosophy</em> and the testing strategy. For the concrete sequence of deliverables and gates, see <a href="phases.html">Phases &amp; Roadmap</a>. For the artifact this plan front-loads, see the <a href="eval-harness.html">Eval Harness</a>.</p>
+</blockquote>
+<hr />
+<h2 id="1-the-sequencing-rule">1. The sequencing rule</h2>
+<p>One principle drives the whole plan:</p>
+<blockquote>
+<p><strong>Build the test for the riskiest assumption before building the thing.</strong></p>
+</blockquote>
+<p>The daemon — capture → diff → FSM → MCP — is the <strong>known</strong> part. Every piece is a mature crate (<a href="tech-specs.html">Tech Specs</a>); wiring them is engineering, not research. The <strong>unknown</strong> part — the only thing that can kill the product — is whether the four tuning knobs can be set so the codec emits on what matters and stays silent otherwise, <strong>on real footage</strong>.</p>
+<p>So <strong>Phase 0 is the eval harness running the core pipeline offline on recorded sessions</strong>, with zero live capture and zero daemon. If the recall/emission numbers can't be hit there, you stop — having spent <strong>days, not months</strong>.</p>
+<p><strong>Everything after Phase 0 is incremental hardening of a thing already proven to work in principle.</strong></p>
+<hr />
+<h2 id="2-why-this-ordering">2. Why this ordering</h2>
+<table>
+<thead>
+<tr>
+<th>If you build…</th>
+<th>first</th>
+<th>the risk is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the capture backend</td>
+<td>first</td>
+<td>you sink weeks into Wayland/PipeWire fiddliness before knowing the codec works at all</td>
+</tr>
+<tr>
+<td>the daemon + MCP</td>
+<td>first</td>
+<td>you have a beautiful pipeline that emits the <em>wrong</em> events, and no way to measure it</td>
+</tr>
+<tr>
+<td><strong>the eval harness</strong></td>
+<td><strong>first</strong></td>
+<td><strong>you learn in days whether the thesis is even true — the cheapest possible way to fail</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The eval harness is cheap precisely because <a href="architecture.html"><code>veyo-core</code></a> does no I/O: you can drive the entire decision pipeline from recorded frames with no capture backend, no daemon, and no MCP server.</p>
+<hr />
+<h2 id="3-build-order-summary">3. Build order (summary)</h2>
+<p>The full table with success gates is in <a href="phases.html">Phases &amp; Roadmap</a>. In brief:</p>
+<ol>
+<li><strong>Phase 0 — Validate.</strong> <code>veyo-core</code> (schema, FSM, salience stub) + <code>veyo-eval</code>, offline on recorded sessions. <em>Gate: recall ≥0.9 @ &lt;1% emission on ≥3 sessions, CPU-only.</em></li>
+<li><strong>Phase 1 — Live MVP.</strong> <code>PollBackend</code> (xcap/scap) + core + <code>veyo-mcp</code> stream; the <code>veyod</code> binary. <em>Gate: a local LLM subscribes over MCP and reacts to real on-screen events live.</em></li>
+<li><strong>Phase 2 — Tune &amp; habituate.</strong> Full habituation/novelty wired; defaults locked from the harness.</li>
+<li><strong>Phase 3 — Optimize &amp; enrich.</strong> <code>PipewireBackend</code> (damage/DMA-BUF) + <code>veyo-store</code> + optional Tier-2.</li>
+<li><strong>Phase 4 — Expand.</strong> CloakPipe routing, <code>blocks</code> mode, camera, Windows/macOS backends.</li>
+</ol>
+<p>The decoupling that makes this order safe: the <strong>capture backend is isolated behind a trait</strong>, so starting with the trivial <code>PollBackend</code> and adding the optimized <code>PipewireBackend</code> later changes nothing downstream. The FSM never learns which OS it's on. See <a href="architecture.html">Architecture §3</a>.</p>
+<hr />
+<h2 id="testing-strategy">4. Testing strategy</h2>
+<p>Three layers, each with a clear job.</p>
+<h3 id="unit-veyo-core">Unit (<code>veyo-core</code>)</h3>
+<ul>
+<li>FSM transition table — <strong>table-driven tests</strong> over every <code>(state, trigger) → (state, emission)</code> row from the <a href="policy-engine.html#per-region-finite-state-machine">Policy Engine</a>.</li>
+<li>Salience math.</li>
+<li>Habituation <strong>decay</strong> <em>and</em> <strong>pattern-break spike</strong> — the reversibility is a correctness property, not a nice-to-have.</li>
+<li>Coalescing.</li>
+</ul>
+<h3 id="integration-the-eval-harness-is-the-integration-test">Integration (the eval harness <em>is</em> the integration test)</h3>
+<p>Replay fixtures, assert recall/emission stay within thresholds, and <strong>wire it into CI so recall can't regress.</strong> The recorded sessions become permanent fixtures. This is the connective tissue between "it works on my session" and "it keeps working." See the <a href="eval-harness.html">Eval Harness</a>.</p>
+<h3 id="bench-criterion">Bench (<code>criterion</code>)</h3>
+<ul>
+<li>Per-region diff throughput — target <em>imperceptible</em> CPU at <code>capture_fps</code>.</li>
+<li>End-to-end frame→delta latency.</li>
+<li>Bounded RSS over a long <strong>soak run</strong> (the ring buffer must not leak).</li>
+</ul>
+<hr />
+<h2 id="5-treat-tuning-as-ml-not-intuition">5. Treat tuning as ML, not intuition</h2>
+<p>The recurring trap is to hand-tweak thresholds until a demo looks good. Don't. The four knobs are hyperparameters; the harness is the training/eval loop; the CI fixtures are the held-out set. This framing — <em>empirical, measured, regression-guarded</em> — is the difference between a codec that holds up across sessions and one that was overfit to a single screen recording. The detail of that loop is in the <a href="eval-harness.html#tuning-loop">Eval Harness</a>.</p>
+<hr />
+<h2 id="6-rough-timebox-solo">6. Rough timebox (solo)</h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Estimate</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 — Validate</td>
+<td>~1–2 weeks</td>
+<td></td>
+</tr>
+<tr>
+<td>1 — Live MVP</td>
+<td>~2 weeks</td>
+<td></td>
+</tr>
+<tr>
+<td>2 — Tune &amp; habituate</td>
+<td>~2–3 weeks</td>
+<td><strong>tuning is the long pole</strong></td>
+</tr>
+<tr>
+<td>3 — Optimize &amp; enrich</td>
+<td>~3–4 weeks</td>
+<td></td>
+</tr>
+<tr>
+<td>4 — Expand</td>
+<td>open-ended</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>These are guidance, not commitments; the Phase-0 gate is what actually governs whether Phase 1 begins.</p>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>The deliverables and gates per phase: <strong><a href="phases.html">Phases &amp; Roadmap</a></strong>.</li>
+<li>The thing built first: <strong><a href="eval-harness.html">Eval Harness</a></strong>.</li>
+<li>The decoupling that makes the order safe: <strong><a href="architecture.html">Architecture</a></strong>.</li>
+<li>The risks this plan is structured to retire: <strong><a href="risks-and-open-questions.html">Risks &amp; Open Questions</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>plan.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>

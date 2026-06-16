@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="veyo docs/build.py — generated from tech-specs.md, do not edit">
+<title>veyo — tech specs · veyo docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <a class="brand" href="index.html"><b>veyo</b><span>docs</span></a>
+  <p class="tagline">A local-first visual event codec — continuous, affordable, private sight for an LLM.</p>
+  <nav>
+    <div class="grouplabel">Start here</div>
+    <a href="index.html">Overview / Index</a>
+    <div class="grouplabel">The What & Why</div>
+    <a href="product-overview.html">Product Overview</a>
+    <div class="grouplabel">The How</div>
+    <a href="architecture.html">Architecture</a>
+    <a class="active" href="tech-specs.html">Tech Specs</a>
+    <a href="policy-engine.html">Policy Engine (IP)</a>
+    <a href="privacy-model.html">Privacy Model</a>
+    <div class="grouplabel">Execution</div>
+    <a href="eval-harness.html">Eval Harness</a>
+    <a href="plan.html">Build Plan</a>
+    <a href="phases.html">Phases & Roadmap</a>
+    <a href="risks-and-open-questions.html">Risks & Open Qs</a>
+    <div class="grouplabel">Reference</div>
+    <a href="glossary.html">Glossary</a>
+  </nav>
+</aside>
+<div class="content">
+<article class="article">
+<div class="toc"><div class="toc-title">On this page</div><div class="toc">
+<ul>
+<li><a href="#1-tech-stack-verified-crates">1. Tech stack (verified crates)</a></li>
+<li><a href="#core-data-model">2. Core data model</a></li>
+<li><a href="#delta-schema">3. Delta schema</a><ul>
+<li><a href="#field-notes">Field notes</a></li>
+</ul>
+</li>
+<li><a href="#capture-backend-trait">4. Capture backend trait</a></li>
+<li><a href="#tier-2-enrichment">5. Tier-2 enrichment</a></li>
+<li><a href="#mcp-surface">6. MCP surface</a></li>
+<li><a href="#storage">7. Storage</a></li>
+<li><a href="#config">8. Config — veyo.toml</a><ul>
+<li><a href="#knob-reference">Knob reference</a></li>
+</ul>
+</li>
+<li><a href="#related">Related</a></li>
+</ul>
+</div>
+</div>
+<h1 id="veyo-tech-specs">veyo — tech specs</h1>
+<blockquote>
+<p>The concrete <em>how</em>: verified crate stack, the core Rust data model, the on-the-wire delta schema, <code>veyo.toml</code>, and storage. Pairs with <a href="architecture.html">Architecture</a> (structure) and the <a href="policy-engine.html">Policy Engine</a> (decision logic).</p>
+<p><strong>Crate note.</strong> Every crate named below was checked to exist on crates.io at time of writing. <strong>Pin exact versions at <code>cargo init</code>.</strong></p>
+</blockquote>
+<hr />
+<h2 id="1-tech-stack-verified-crates">1. Tech stack (verified crates)</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Crate</th>
+<th>Role / notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Async runtime</td>
+<td><code>tokio</code></td>
+<td>daemon event loop, timers (settle windows), task spawning</td>
+</tr>
+<tr>
+<td>Capture (simple, x-platform)</td>
+<td><code>xcap</code> or <code>scap</code></td>
+<td>Phase-1 grab-and-poll on Linux/Win/macOS — fastest path to a working pipeline</td>
+</tr>
+<tr>
+<td>Capture (optimized, Linux)</td>
+<td><code>ashpd</code> + <code>pipewire</code> (or <code>lamco-pipewire</code>)</td>
+<td>Phase-3 zero-copy via XDG ScreenCast portal + DMA-BUF + compositor damage</td>
+</tr>
+<tr>
+<td>Capture (Wayland alt)</td>
+<td><code>libwayshot</code>, <code>waycap-rs</code></td>
+<td>fallback / reference implementations</td>
+</tr>
+<tr>
+<td>Downscale</td>
+<td><code>fast_image_resize</code></td>
+<td>SIMD region downscale to 32×32 before hashing (hot path)</td>
+</tr>
+<tr>
+<td>Perceptual hash / diff</td>
+<td><code>img_hash</code>; <code>dssim</code> (perceptual distance); <code>scenesdetect</code> (reference SIMD pHash/SAD)</td>
+<td>Tier-1 cheap change detection</td>
+</tr>
+<tr>
+<td>Tier-2 ML (optional)</td>
+<td><code>ort</code> (ONNX Runtime, already used in ctxgraph) or <code>rten</code> (pure-Rust)</td>
+<td>OCR / UI-element tagging, gated, lazy</td>
+</tr>
+<tr>
+<td>OCR (optional)</td>
+<td><code>oar-ocr</code> / <code>ocr-rs</code></td>
+<td>Tier-2 text enrichment</td>
+</tr>
+<tr>
+<td>MCP server</td>
+<td><code>rmcp</code> (official MCP Rust SDK)</td>
+<td><code>subscribe_events</code>, <code>get_current_state</code>, <code>query_events</code>, <code>describe_region</code></td>
+</tr>
+<tr>
+<td>Storage</td>
+<td><code>rusqlite</code> (FTS5)</td>
+<td>bi-temporal event log; or write into <code>ctxgraph</code></td>
+</tr>
+<tr>
+<td>Serialization</td>
+<td><code>serde</code>, <code>serde_json</code></td>
+<td>delta schema on the wire + on disk</td>
+</tr>
+<tr>
+<td>CLI / config</td>
+<td><code>clap</code>, <code>toml</code>, <code>serde</code></td>
+<td><code>veyod</code> flags + <code>veyo.toml</code></td>
+</tr>
+<tr>
+<td>Logging</td>
+<td><code>tracing</code>, <code>tracing-subscriber</code></td>
+<td>structured daemon logs</td>
+</tr>
+<tr>
+<td>Errors</td>
+<td><code>anyhow</code> (bins), <code>thiserror</code> (libs)</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="core-data-model">2. Core data model</h2>
+<p>Lives in <code>veyo-core</code>, which performs <strong>no I/O</strong> — these types are driven directly by the daemon and by the <a href="eval-harness.html">eval harness</a>. The shapes below are the frozen v0.1 schema; the ones marked <em>(implemented)</em> already exist in <code>crates/veyo-core</code>.</p>
+<blockquote>
+<p><strong>Time is logical, not wall-clock.</strong> The core is driven by frame timestamps (<code>TimeMs</code>, a <code>u64</code> of milliseconds) rather than <code>SystemTime</code>/<code>Instant</code>. The <strong>epoch is source-defined</strong>: wall-clock epoch-ms in the live daemon, relative-to-recording-start when the harness replays offline. That keeps every FSM transition deterministic and replayable — the single most important property for tuning. Event ids are a <code>String</code> newtype (<code>EventId</code>) minted by the emitter, not generated inside the pure core.</p>
+</blockquote>
+<pre><code class="language-rust">pub type TimeMs = u64;                  // ms; epoch is source-defined (implemented)
+pub struct EventId(pub String);         // &quot;ev_01H...&quot;; minted by the emitter (implemented)
+
+pub struct WorldState {
+    pub surfaces: Vec&lt;Surface&gt;,         // windows/apps
+    pub focused: Option&lt;SurfaceId&gt;,
+    pub regions: HashMap&lt;RegionId, RegionState&gt;,
+    pub t: TimeMs,                      // last update
+}
+
+pub struct Surface {
+    pub id: SurfaceId,
+    pub app: String,
+    pub title: String,
+    pub bounds: Rect,
+}
+
+pub struct RegionState {
+    pub id: RegionId,
+    pub grid: (u8, u8),
+    pub bounds: Rect,
+    pub fsm: RegionFsm,                 // Static → Changing → Settling (implemented)
+    pub last_cell: [u8; 64],           // last 8×8 downscaled cell, see `veyo-core::diff`
+    pub baseline: NoveltyBaseline,     // rolling change-frequency estimate (implemented)
+}
+
+pub enum Phase { Static, Changing, Settling }   // (implemented)
+
+pub struct Delta {                      // (implemented)
+    pub v: u8,                         // schema version — LOCKED at 1
+    pub id: EventId,
+    pub t_event: TimeMs,               // when it happened on screen
+    pub t_observed: TimeMs,            // emitted-at; offline this == t_event
+    pub source: String,                // &quot;screen:0&quot;
+    pub kind: EventKind,
+    pub surface: SurfaceRef,
+    pub region: RegionRef,
+    pub summary: String,               // LLM payload (templated T1, semantic T2)
+    pub salience: f32,                 // [0,1]
+    pub novelty: f32,                  // [0,1]
+    pub duration_ms: Option&lt;u32&gt;,
+    pub evidence: Evidence,            // LOCAL ONLY — #[serde(skip)], never on the wire
+}
+
+pub enum EventKind {                    // frozen; Phase-0 core emits only the two below
+    FocusChange, SurfaceOpen, SurfaceClose,
+    RegionChange, StateSettle,          // &lt;- the only kinds veyo-core emits today
+    Idle, Active, Anomaly,              // reserved for the daemon / later phases
+}
+</code></pre>
+<p><strong>Two non-negotiables baked into the types:</strong></p>
+<ol>
+<li><strong><code>evidence</code> carries <code>#[serde(skip)]</code></strong> so it physically <em>cannot</em> be serialized onto the MCP wire — the <a href="privacy-model.html">privacy invariant</a> enforced by the type system, not by discipline. A regression test (<code>evidence_never_serialized_to_wire</code>) asserts no <code>phash</code>/thumbnail ever appears in the JSON.</li>
+<li><strong>The schema <code>v</code> and the <code>StateSettle</code> shape are frozen</strong> — downstream agents bind to them. See the freeze rationale in <a href="risks-and-open-questions.html">Risks &amp; Open Questions</a>.</li>
+</ol>
+<hr />
+<h2 id="delta-schema">3. Delta schema</h2>
+<p>JSON on the wire (MCP), stored in sqlite/ctxgraph. The schema is <strong>versioned</strong> (<code>v</code>).</p>
+<pre><code class="language-json">{
+  &quot;v&quot;: 1,
+  &quot;id&quot;: &quot;ev_01H....&quot;,
+  &quot;t_event&quot;: 1781605862140,
+  &quot;t_observed&quot;: 1781605862180,
+  &quot;source&quot;: &quot;screen:0&quot;,
+  &quot;type&quot;: &quot;state_settle&quot;,
+  &quot;surface&quot;: { &quot;id&quot;: &quot;win_42&quot;, &quot;app&quot;: &quot;firefox&quot;, &quot;title&quot;: &quot;PR #1182 · github&quot;, &quot;focused&quot;: true },
+  &quot;region&quot;: { &quot;id&quot;: &quot;r_3&quot;, &quot;grid&quot;: [2, 1], &quot;bounds&quot;: [640, 80, 1280, 760] },
+  &quot;summary&quot;: &quot;content in main region stopped changing after ~1.4s&quot;,
+  &quot;salience&quot;: 0.71,
+  &quot;novelty&quot;: 0.83,
+  &quot;duration_ms&quot;: 1420,
+  &quot;evidence&quot;: { &quot;phash&quot;: &quot;f3a1...&quot;, &quot;thumb_ref&quot;: &quot;local://cache/ev_01H....webp&quot; }
+}
+</code></pre>
+<h3 id="field-notes">Field notes</h3>
+<ul>
+<li><strong><code>t_event</code> / <code>t_observed</code></strong> — <strong>milliseconds</strong> as a <code>u64</code> (source-defined epoch), not RFC3339 strings. This is the canonical, frozen wire representation; an MCP edge <em>may</em> additionally render RFC3339 for human display, but the stored/transmitted type is the integer. Both axes are always present (bi-temporal); in the pure offline core they coincide, while the live daemon stamps them separately.</li>
+<li><strong><code>summary</code></strong> — short text the LLM reads. For Tier-1-only events it's templated (<em>"region X started/stopped changing"</em>); for Tier-2-enriched events it's semantic (<em>"a confirmation dialog appeared"</em>, <em>"terminal shows a non-zero exit"</em>).</li>
+<li><strong><code>salience</code> ∈ [0,1]</strong> — how much downstream should care; consumers filter on it. Computed by the <a href="policy-engine.html#salience">salience model</a>.</li>
+<li><strong><code>novelty</code> ∈ [0,1]</strong> — inverse of habituation; repetitive changes decay toward 0. See <a href="policy-engine.html#habituation">habituation</a>.</li>
+<li><strong><code>evidence</code></strong> — <strong>local-only.</strong> <code>phash</code> is a perceptual hash; <code>thumb_ref</code> points at a thumbnail in the local cache. <strong>Neither is ever transmitted.</strong> It exists for local audit/replay and lazy on-demand enrichment, not for export. This field is the one with the serialization boundary in §2.</li>
+</ul>
+<hr />
+<h2 id="capture-backend-trait">4. Capture backend trait</h2>
+<p>The trait that isolates every platform difference (see <a href="architecture.html#capture-backends">Architecture §2</a>):</p>
+<pre><code class="language-rust">pub trait CaptureBackend: Send {
+    /// Next frame, plus optional OS-provided dirty rects (damage) when available.
+    fn next_frame(&amp;mut self) -&gt; Result&lt;Frame&gt;;
+    fn damage(&amp;self) -&gt; Option&lt;&amp;[Rect]&gt;;   // Some on Wayland/DXGI, None on macOS poll
+    fn surfaces(&amp;self) -&gt; Result&lt;Vec&lt;Surface&gt;&gt;;
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Crate(s)</th>
+<th>Damage rects</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PollBackend</code></td>
+<td><code>xcap</code> / <code>scap</code></td>
+<td>none</td>
+<td>1 (first)</td>
+</tr>
+<tr>
+<td><code>PipewireBackend</code></td>
+<td><code>ashpd</code> + <code>pipewire</code></td>
+<td>yes (compositor)</td>
+<td>3 (optimization)</td>
+</tr>
+<tr>
+<td><code>DxgiBackend</code></td>
+<td>Windows DXGI</td>
+<td>yes (dirty-rects)</td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>ScreenCaptureKitBackend</code></td>
+<td>macOS</td>
+<td><strong>none</strong> → leans on Tier-1 pHash</td>
+<td>4</td>
+</tr>
+</tbody>
+</table>
+<p>The FSM downstream never changes regardless of backend — that decoupling is the whole point.</p>
+<hr />
+<h2 id="tier-2-enrichment">5. Tier-2 enrichment</h2>
+<p><code>veyo-enrich</code>, behind an <strong>optional feature flag</strong>. Runs <strong>only</strong> on a gate-passing event, on <strong>only</strong> that region's thumbnail — dozens of times/hour, not 30×/sec. <code>ort</code> (or <code>rten</code>) loads a small UI detector and/or OCR (<code>oar-ocr</code>). It promotes a templated summary (<em>"region r_3 settled after 1.4s"</em>) to a semantic one (<em>"a confirmation dialog 'Overwrite file?' appeared"</em>). <strong>Off by default</strong> to preserve the cheap/private posture.</p>
+<hr />
+<h2 id="mcp-surface">6. MCP surface</h2>
+<p>Exposed by <code>veyo-mcp</code> via <code>rmcp</code>. Transport: <code>stdio</code> (single-consumer agent) or <code>streamable-http</code>/SSE (daemon with multiple subscribers).</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Signature intent</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>subscribe_events(filter)</code></td>
+<td>filter by <code>kind</code>, <code>surface</code>, <code>min_salience</code></td>
+<td>live notification stream of deltas</td>
+</tr>
+<tr>
+<td><code>get_current_state()</code></td>
+<td>—</td>
+<td>compact text snapshot of <code>WorldState</code></td>
+</tr>
+<tr>
+<td><code>query_events(since, until, kind?, surface?)</code></td>
+<td>time range + optional filters</td>
+<td>historical deltas from the store</td>
+</tr>
+<tr>
+<td><code>describe_region(region_id)</code></td>
+<td>one region</td>
+<td>lazy Tier-2 enrichment — <strong>text only, never the image</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="storage">7. Storage</h2>
+<p><code>rusqlite</code> with FTS5 on <code>summary</code>. An <strong>append-only</strong> event table keyed by <code>id</code>, indexed on <code>t_event</code>, <code>t_observed</code>, <code>kind</code>, and <code>surface</code>. Thumbnails (if Tier-2 on) live in a local cache dir referenced by <code>evidence.thumb_ref</code> and <strong>never leave disk</strong>. A <code>ctxgraph</code> adapter lets the same deltas flow into the bi-temporal graph as the long-term memory layer.</p>
+<hr />
+<h2 id="config">8. Config — <code>veyo.toml</code></h2>
+<pre><code class="language-toml">capture_fps        = 4
+region_mode        = &quot;grid&quot;   # grid | blocks(v2)
+grid               = [8, 8]
+epsilon_noise      = 0.03     # Gate-1 mean-abs-diff floor, [0,1]
+settle_window_ms   = 400
+salience_min       = 0.4
+novelty_decay      = 0.9
+focus_weight       = 1.5
+coalesce_window_ms = 1000
+tier2              = &quot;off&quot;    # off | ocr | ui | both
+mcp_transport      = &quot;stdio&quot;  # stdio | sse
+persist_thumbs     = false
+</code></pre>
+<h3 id="knob-reference">Knob reference</h3>
+<table>
+<thead>
+<tr>
+<th>knob</th>
+<th>meaning</th>
+<th>starting default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>capture_fps</code></td>
+<td>poll rate when not damage-driven</td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>epsilon_noise</code></td>
+<td>per-region diff floor to ignore (mean abs diff, <code>[0,1]</code>)</td>
+<td>0.03 (tuned per source)</td>
+</tr>
+<tr>
+<td><code>settle_window_ms</code></td>
+<td>static-hold before declaring settled</td>
+<td>400</td>
+</tr>
+<tr>
+<td><code>salience_min</code></td>
+<td>emit threshold to upstream</td>
+<td>0.4</td>
+</tr>
+<tr>
+<td><code>novelty_decay</code></td>
+<td>habituation rate</td>
+<td>0.9 / window</td>
+</tr>
+<tr>
+<td><code>focus_weight</code></td>
+<td>multiplier for focused surface</td>
+<td>1.5</td>
+</tr>
+<tr>
+<td><code>coalesce_window_ms</code></td>
+<td>anti-spam merge window (planned, Phase-1+)</td>
+<td>1000</td>
+</tr>
+<tr>
+<td><code>region_mode</code></td>
+<td><code>grid</code> (v1) or <code>blocks</code> (v2)</td>
+<td>grid</td>
+</tr>
+<tr>
+<td><code>tier2</code></td>
+<td>enrichment on/off + model</td>
+<td>off</td>
+</tr>
+<tr>
+<td><code>mcp_transport</code></td>
+<td><code>stdio</code> (single agent) or <code>sse</code> (subscribers)</td>
+<td>stdio</td>
+</tr>
+<tr>
+<td><code>persist_thumbs</code></td>
+<td>write thumbnails to local cache (Tier-2)</td>
+<td>false</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>These defaults are guesses.</strong> The four tuning knobs (<code>epsilon_noise</code>, <code>settle_window_ms</code>, <code>salience_min</code>, <code>novelty_decay</code>) are <em>hyperparameters</em> — the <a href="eval-harness.html">Eval Harness</a> sets their real values against recorded sessions, and that tuning <strong>is</strong> the core engineering work.</p>
+</blockquote>
+<hr />
+<h2 id="related">Related</h2>
+<ul>
+<li>How these types flow through the system: <strong><a href="architecture.html">Architecture</a></strong>.</li>
+<li>The logic that computes <code>salience</code> / <code>novelty</code> and drives <code>Phase</code>: <strong><a href="policy-engine.html">Policy Engine</a></strong>.</li>
+<li>Why <code>evidence</code> is serialization-fenced: <strong><a href="privacy-model.html">Privacy Model</a></strong>.</li>
+<li>Terms used here: <strong><a href="glossary.html">Glossary</a></strong>.</li>
+</ul>
+<footer class="docfooter">
+  <span>Generated from <code>tech-specs.md</code> — edit the Markdown, then run <code>python3 build.py</code>.</span>
+  <span>veyo · product spec v0.1 (draft)</span>
+</footer>
+</article>
+</div>
+</div>
+</body>
+</html>
