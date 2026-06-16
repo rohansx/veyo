@@ -41,6 +41,10 @@ pub struct CodecConfig {
     pub novelty_decay: f32,
     /// Salience multiplier applied to regions in the focused surface (else `1.0`).
     pub focus_weight: f32,
+    /// Spatial anti-spam: when at least this many regions emit the **same kind** in one
+    /// frame (e.g. a modal or app switch lighting many grid cells), they're merged into
+    /// a single coalesced macro-delta. Set high to disable.
+    pub coalesce_min_regions: usize,
     /// Source descriptor stamped onto every delta, e.g. `"screen:0"`.
     pub source: String,
 }
@@ -54,6 +58,7 @@ impl Default for CodecConfig {
             salience_min: 0.4,
             novelty_decay: 0.9,
             focus_weight: 1.5,
+            coalesce_min_regions: 4,
             source: "screen:0".to_string(),
         }
     }
@@ -127,87 +132,174 @@ impl Codec {
     }
 
     /// Advance one frame; return the deltas it produced (usually none).
+    ///
+    /// Per-region intents are collected first, then turned into deltas with spatial
+    /// coalescing — when many regions emit the same kind in one frame (a modal, an app
+    /// switch), they merge into one macro-delta instead of fragmenting across the grid.
     pub fn observe(&mut self, frame: Frame) -> Vec<Delta> {
         debug_assert_eq!(
             frame.cells.len(),
             self.regions.len(),
             "frame cell count must equal region count (cols × rows)"
         );
-        let mut out = Vec::new();
         let n = self.regions.len().min(frame.cells.len());
+        let mut intents: Vec<Intent> = Vec::new();
         for i in 0..n {
             let cell = &frame.cells[i];
-
-            // --- region-state mutation (scoped so the &mut borrow ends here) ---
-            let intent = {
-                let region = &mut self.regions[i];
-                let mag = match region.last {
-                    Some(ref prev) => diff::magnitude(prev, cell),
-                    None => 0.0,
-                };
-                region.last = Some(*cell);
-                let changed = mag >= self.cfg.epsilon_noise;
-                region.baseline.observe(changed);
-                let novelty = region.baseline.novelty();
-
-                let event = region
-                    .fsm
-                    .observe(changed, frame.t_ms, self.cfg.settle_window_ms);
-
-                // Maintain the episode's peak magnitude / opening novelty.
-                match event {
-                    Some(FsmEvent::RegionChange) => {
-                        region.episode_peak = mag;
-                        region.episode_novelty = novelty;
-                    }
-                    _ if changed => region.episode_peak = region.episode_peak.max(mag),
-                    _ => {}
-                }
-
-                event.and_then(|event| {
-                    let (basis_mag, basis_nov, kind, duration) = match event {
-                        FsmEvent::RegionChange => (mag, novelty, EventKind::RegionChange, None),
-                        FsmEvent::StateSettle { duration_ms } => {
-                            let intent = (
-                                region.episode_peak,
-                                region.episode_novelty,
-                                EventKind::StateSettle,
-                                Some(duration_ms),
-                            );
-                            region.episode_peak = 0.0;
-                            intent
-                        }
-                    };
-                    let w = focus_multiplier(self.surface.focused, self.cfg.focus_weight);
-                    let score = salience(w, basis_mag, basis_nov);
-                    should_emit(score, self.cfg.salience_min)
-                        .then_some((kind, score, basis_nov, duration))
-                })
+            let region = &mut self.regions[i];
+            let mag = match region.last {
+                Some(ref prev) => diff::magnitude(prev, cell),
+                None => 0.0,
             };
+            region.last = Some(*cell);
+            let changed = mag >= self.cfg.epsilon_noise;
+            region.baseline.observe(changed);
+            let novelty = region.baseline.novelty();
 
-            // --- delta construction (region borrow released) ---
-            if let Some((kind, score, novelty, duration)) = intent {
-                self.seq += 1;
-                let reference = self.regions[i].reference.clone();
-                let summary = summary_for(&kind, &reference.id, duration);
-                out.push(Delta {
-                    v: SCHEMA_V,
-                    id: EventId(format!("ev_{:012}", self.seq)),
-                    t_event: frame.t_ms,
-                    t_observed: frame.t_ms,
-                    source: self.cfg.source.clone(),
+            let event = region
+                .fsm
+                .observe(changed, frame.t_ms, self.cfg.settle_window_ms);
+
+            // Maintain the episode's peak magnitude / opening novelty.
+            match event {
+                Some(FsmEvent::RegionChange) => {
+                    region.episode_peak = mag;
+                    region.episode_novelty = novelty;
+                }
+                _ if changed => region.episode_peak = region.episode_peak.max(mag),
+                _ => {}
+            }
+
+            let Some(event) = event else { continue };
+            let (basis_mag, basis_nov, kind, duration) = match event {
+                FsmEvent::RegionChange => (mag, novelty, EventKind::RegionChange, None),
+                FsmEvent::StateSettle { duration_ms } => {
+                    let t = (
+                        region.episode_peak,
+                        region.episode_novelty,
+                        EventKind::StateSettle,
+                        Some(duration_ms),
+                    );
+                    region.episode_peak = 0.0;
+                    t
+                }
+            };
+            let w = focus_multiplier(self.surface.focused, self.cfg.focus_weight);
+            let score = salience(w, basis_mag, basis_nov);
+            if should_emit(score, self.cfg.salience_min) {
+                intents.push(Intent {
+                    region: i,
                     kind,
-                    surface: self.surface.clone(),
-                    region: reference,
-                    summary,
                     salience: score,
-                    novelty,
-                    duration_ms: duration,
-                    evidence: Evidence::default(),
+                    novelty: basis_nov,
+                    duration,
                 });
             }
         }
+        self.build_deltas(intents, frame.t_ms)
+    }
+
+    /// Turn this frame's emit intents into deltas, coalescing dense same-kind bursts.
+    fn build_deltas(&mut self, intents: Vec<Intent>, t: TimeMs) -> Vec<Delta> {
+        let mut out = Vec::new();
+        for kind in [EventKind::RegionChange, EventKind::StateSettle] {
+            let group: Vec<&Intent> = intents.iter().filter(|x| x.kind == kind).collect();
+            if group.is_empty() {
+                continue;
+            }
+            if group.len() >= self.cfg.coalesce_min_regions.max(2) {
+                out.push(self.coalesced_delta(&group, kind, t));
+            } else {
+                for it in &group {
+                    out.push(self.single_delta(it, t));
+                }
+            }
+        }
         out
+    }
+
+    fn single_delta(&mut self, it: &Intent, t: TimeMs) -> Delta {
+        self.seq += 1;
+        let reference = self.regions[it.region].reference.clone();
+        let summary = summary_for(&it.kind, &reference.id, it.duration);
+        Delta {
+            v: SCHEMA_V,
+            id: EventId(format!("ev_{:012}", self.seq)),
+            t_event: t,
+            t_observed: t,
+            source: self.cfg.source.clone(),
+            kind: it.kind,
+            surface: self.surface.clone(),
+            region: reference,
+            summary,
+            salience: it.salience,
+            novelty: it.novelty,
+            duration_ms: it.duration,
+            evidence: Evidence::default(),
+        }
+    }
+
+    fn coalesced_delta(&mut self, group: &[&Intent], kind: EventKind, t: TimeMs) -> Delta {
+        self.seq += 1;
+        let n = group.len();
+        let salience = group.iter().map(|x| x.salience).fold(0.0_f32, f32::max);
+        let novelty = group.iter().map(|x| x.novelty).fold(0.0_f32, f32::max);
+        let bounds = group
+            .iter()
+            .map(|x| self.regions[x.region].reference.bounds)
+            .reduce(union_rect)
+            .unwrap_or(Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            });
+        let (verb, duration) = match kind {
+            EventKind::StateSettle => ("settled", group.iter().filter_map(|x| x.duration).max()),
+            _ => ("changed", None),
+        };
+        Delta {
+            v: SCHEMA_V,
+            id: EventId(format!("ev_{:012}", self.seq)),
+            t_event: t,
+            t_observed: t,
+            source: self.cfg.source.clone(),
+            kind,
+            surface: self.surface.clone(),
+            region: RegionRef {
+                id: "r_multi".to_string(),
+                grid: [255, 255],
+                bounds,
+            },
+            summary: format!("{n} regions {verb}"),
+            salience,
+            novelty,
+            duration_ms: duration,
+            evidence: Evidence::default(),
+        }
+    }
+}
+
+/// One region's decision for a frame, before coalescing.
+struct Intent {
+    region: usize,
+    kind: EventKind,
+    salience: f32,
+    novelty: f32,
+    duration: Option<u32>,
+}
+
+/// Smallest rectangle covering both inputs.
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = (a.x + a.w).max(b.x + b.w);
+    let y1 = (a.y + a.h).max(b.y + b.h);
+    Rect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
     }
 }
 
@@ -441,5 +533,54 @@ mod tests {
             ids.contains("r_0") && ids.contains("r_1"),
             "both regions should emit: {ids:?}"
         );
+    }
+
+    #[test]
+    fn dense_simultaneous_changes_coalesce_into_one() {
+        const L: usize = crate::diff::CELL_LEN;
+        let mut codec = grid_codec(2, 2, (200, 200)); // 4 regions; default coalesce_min = 4
+        codec.observe(Frame {
+            t_ms: 0,
+            cells: &vec![[0; L]; 4],
+        });
+        let out = codec.observe(Frame {
+            t_ms: 250,
+            cells: &vec![[255; L]; 4],
+        });
+        assert_eq!(
+            out.len(),
+            1,
+            "4 simultaneous changes should coalesce, got {out:?}"
+        );
+        assert_eq!(out[0].kind, EventKind::RegionChange);
+        assert_eq!(out[0].region.id, "r_multi");
+        assert!(out[0].summary.contains("4 regions"));
+        // the macro-delta's bounds cover the union of all four cells (the whole frame)
+        assert_eq!(
+            out[0].region.bounds,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 200,
+                h: 200
+            }
+        );
+    }
+
+    #[test]
+    fn sparse_changes_stay_separate() {
+        const L: usize = crate::diff::CELL_LEN;
+        let mut codec = grid_codec(2, 2, (200, 200));
+        codec.observe(Frame {
+            t_ms: 0,
+            cells: &vec![[0; L]; 4],
+        });
+        // only 2 of 4 regions change -> below the coalesce threshold -> individual
+        let out = codec.observe(Frame {
+            t_ms: 250,
+            cells: &[[255; L], [255; L], [0; L], [0; L]],
+        });
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|d| d.region.id != "r_multi"));
     }
 }

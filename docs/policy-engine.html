@@ -148,11 +148,12 @@ emit if salience &gt;= salience_min
 <hr />
 <h2 id="5-anti-spam-coalescing">5. Anti-spam / coalescing</h2>
 <blockquote>
-<p><strong>Status: planned (Phase-1+).</strong> Coalescing is specified here but is <strong>not</strong> in the
-Phase-0 <code>veyo-core</code> engine yet. Today the FSM's own compression (continuous change →
-one event) and the salience gate carry the anti-spam load; the per-region grid in v1
-rarely fractures, so coalescing earns its keep only once <code>blocks</code> mode or multi-surface
-arrives.</p>
+<p><strong>Status: spatial coalescing is implemented; temporal is planned.</strong> <code>veyo-core</code> now
+merges a same-frame, same-kind burst across ≥ <code>coalesce_min_regions</code> cells into one
+macro-delta (region id <code>r_multi</code>, bounds = the union) — so a modal or app switch that
+lights the whole grid emits <em>one</em> event, not sixty. Measured on a recorded session
+this cut emissions ~16× with <strong>no</strong> recall loss. The <strong>temporal</strong> <code>coalesce_window_ms</code>
+rate cap (merging across adjacent <em>frames</em>) is still future work.</p>
 </blockquote>
 <ul>
 <li>A <strong>global rate cap</strong> per <code>coalesce_window_ms</code>. Excess low-salience events merge into one coalesced summary — <em>"3 background regions changed"</em>.</li>

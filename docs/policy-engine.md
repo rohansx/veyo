@@ -94,11 +94,12 @@ This is the anti-spam moat, and it must be **exercised hard in the eval harness*
 
 ## 5. Anti-spam / coalescing {#5-anti-spam-coalescing}
 
-> **Status: planned (Phase-1+).** Coalescing is specified here but is **not** in the
-> Phase-0 `veyo-core` engine yet. Today the FSM's own compression (continuous change →
-> one event) and the salience gate carry the anti-spam load; the per-region grid in v1
-> rarely fractures, so coalescing earns its keep only once `blocks` mode or multi-surface
-> arrives.
+> **Status: spatial coalescing is implemented; temporal is planned.** `veyo-core` now
+> merges a same-frame, same-kind burst across ≥ `coalesce_min_regions` cells into one
+> macro-delta (region id `r_multi`, bounds = the union) — so a modal or app switch that
+> lights the whole grid emits *one* event, not sixty. Measured on a recorded session
+> this cut emissions ~16× with **no** recall loss. The **temporal** `coalesce_window_ms`
+> rate cap (merging across adjacent *frames*) is still future work.
 
 - A **global rate cap** per `coalesce_window_ms`. Excess low-salience events merge into one coalesced summary — *"3 background regions changed"*.
 - **Adjacent-cell coalescing.** A modal that spans 4 grid cells would naively produce 4 `region_change` events; `coalesce_window_ms` merges concurrent low-salience changes across adjacent grid cells into one macro-event. (This is also the main mitigation for grid mode "fracturing" a UI element — see [Risks](risks-and-open-questions.md).)

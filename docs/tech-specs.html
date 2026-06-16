@@ -326,7 +326,8 @@ settle_window_ms   = 400
 salience_min       = 0.4
 novelty_decay      = 0.9
 focus_weight       = 1.5
-coalesce_window_ms = 1000
+coalesce_min_regions = 4     # spatial coalescing threshold (implemented)
+coalesce_window_ms = 1000    # temporal rate cap (planned)
 tier2              = &quot;off&quot;    # off | ocr | ui | both
 mcp_transport      = &quot;stdio&quot;  # stdio | sse
 persist_thumbs     = false
@@ -372,8 +373,13 @@ persist_thumbs     = false
 <td>1.5</td>
 </tr>
 <tr>
+<td><code>coalesce_min_regions</code></td>
+<td>spatial coalescing: merge ≥N same-kind, same-frame emissions into one macro-delta</td>
+<td>4</td>
+</tr>
+<tr>
 <td><code>coalesce_window_ms</code></td>
-<td>anti-spam merge window (planned, Phase-1+)</td>
+<td>temporal anti-spam merge window (planned, Phase-1+)</td>
 <td>1000</td>
 </tr>
 <tr>

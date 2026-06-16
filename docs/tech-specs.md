@@ -184,7 +184,8 @@ settle_window_ms   = 400
 salience_min       = 0.4
 novelty_decay      = 0.9
 focus_weight       = 1.5
-coalesce_window_ms = 1000
+coalesce_min_regions = 4     # spatial coalescing threshold (implemented)
+coalesce_window_ms = 1000    # temporal rate cap (planned)
 tier2              = "off"    # off | ocr | ui | both
 mcp_transport      = "stdio"  # stdio | sse
 persist_thumbs     = false
@@ -200,7 +201,8 @@ persist_thumbs     = false
 | `salience_min` | emit threshold to upstream | 0.4 |
 | `novelty_decay` | habituation rate | 0.9 / window |
 | `focus_weight` | multiplier for focused surface | 1.5 |
-| `coalesce_window_ms` | anti-spam merge window (planned, Phase-1+) | 1000 |
+| `coalesce_min_regions` | spatial coalescing: merge ≥N same-kind, same-frame emissions into one macro-delta | 4 |
+| `coalesce_window_ms` | temporal anti-spam merge window (planned, Phase-1+) | 1000 |
 | `region_mode` | `grid` (v1) or `blocks` (v2) | grid |
 | `tier2` | enrichment on/off + model | off |
 | `mcp_transport` | `stdio` (single agent) or `sse` (subscribers) | stdio |
