@@ -1,0 +1,10 @@
+{
+  "name": "veyo-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Drives a controllable browser scene through scripted events, capturing frames at logical fps and emitting ground-truth annotations for the veyo-eval harness.",
+  "bin": { "veyo-record": "record-session.mjs" },
+  "scripts": { "record": "node record-session.mjs" },
+  "dependencies": { "playwright": "1.61.0" }
+}
