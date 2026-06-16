@@ -1,0 +1,7 @@
+{"t_ms":2500,"kind":"page_loaded","surface":"screen:0","note":"main content finished loading"}
+{"t_ms":7500,"kind":"modal_appeared","surface":"screen:0","note":"overwrite dialog opened"}
+{"t_ms":11000,"kind":"modal_dismissed","surface":"screen:0","note":"dialog closed"}
+{"t_ms":14500,"kind":"error_shown","surface":"screen:0","note":"red error banner appeared"}
+{"t_ms":21500,"kind":"build_finished","surface":"screen:0","note":"build passed (green)"}
+{"t_ms":26000,"kind":"notification","surface":"screen:0","note":"deploy-succeeded toast"}
+{"t_ms":31500,"kind":"content_refreshed","surface":"screen:0","note":"main panel replaced"}

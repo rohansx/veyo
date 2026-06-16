@@ -1,0 +1,25 @@
+# veyo.toml — daemon configuration
+# All values shown are the defaults; comment out what you don't need to change.
+# Run `veyod --print-config` to see the resolved config at startup.
+
+# Capture
+capture_fps = 4           # poll rate (frames/sec). Wayland damage events make this a floor, not a ceiling.
+monitor     = 0           # 0 = primary monitor; increment for multi-monitor setups
+
+# Gate-1: cheap pixel diff
+grid            = [8, 8]  # cols × rows; more cells = finer spatial resolution, more work
+epsilon_noise   = 0.03    # mean-abs-diff floor [0,1]; below this a region is "not changing"
+
+# Debounce FSM
+settle_window_ms = 400    # quiet hold (ms) before declaring a region settled
+
+# Gate-2: salience
+salience_min  = 0.4       # emit threshold; lower = more events
+novelty_decay = 0.9       # EWMA decay for habituation (0=instant, 1=never forgets)
+focus_weight  = 1.5       # salience multiplier for focused surface
+
+# Anti-spam
+coalesce_min_regions = 4  # merge ≥N same-kind same-frame cell events into one macro-delta
+
+# Storage
+store_cap = 2000          # in-memory delta ring buffer size (MCP server reads from this)
