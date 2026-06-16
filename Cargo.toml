@@ -8,11 +8,11 @@ resolver = "2"
 members = [
     "crates/veyo-core",
     "crates/veyo-eval",       # Phase 0: offline replay + scoring + tuning
-    # "crates/veyo-capture",  # Phase 1
-    # "crates/veyo-mcp",      # Phase 1
+    "crates/veyo-capture",    # Phase 1: live screen capture abstraction
+    "crates/veyo-mcp",        # Phase 1: MCP server
+    "bins/veyod",             # Phase 1: daemon binary
     # "crates/veyo-store",    # Phase 3
     # "crates/veyo-enrich",   # Phase 3 (optional feature)
-    # "bins/veyod",           # Phase 1
 ]
 
 [workspace.package]
@@ -26,3 +26,10 @@ rust-version = "1.80"
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+tokio = { version = "1.44", features = ["full"] }
+anyhow = "1.0.102"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+xcap = "0.9.6"
+rmcp = { version = "1.7.0", features = ["server", "transport-io", "macros"] }
+schemars = "1"

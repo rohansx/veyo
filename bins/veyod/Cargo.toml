@@ -1,0 +1,23 @@
+[package]
+name = "veyod"
+description = "veyo daemon — wires capture → codec → MCP event stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "veyod"
+path = "src/main.rs"
+
+[dependencies]
+veyo-core = { path = "../../crates/veyo-core" }
+veyo-capture = { path = "../../crates/veyo-capture" }
+veyo-mcp = { path = "../../crates/veyo-mcp" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
