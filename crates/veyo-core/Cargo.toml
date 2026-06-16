@@ -1,0 +1,14 @@
+[package]
+name = "veyo-core"
+description = "veyo's pure, no-I/O core: the frozen delta schema, world-state, debounce FSM, salience and habituation. Driven by the daemon and by the offline eval harness alike."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

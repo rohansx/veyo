@@ -1,0 +1,25 @@
+[package]
+name = "veyo-eval"
+description = "veyo's Phase-0 offline eval harness: replay recorded sessions through veyo-core, score recall/precision/emission against human annotations, and grid-search the tuning knobs. The integration test that the Phase-0 go/no-go gate runs against."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+# `decode` adds PNG frame loading + the runnable `veyo-eval` binary. The pure scoring,
+# tuning and downscale logic build and test without it (`--no-default-features`).
+default = ["decode"]
+decode = ["dep:png", "dep:anyhow"]
+
+[dependencies]
+veyo-core = { path = "../veyo-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+png = { version = "0.18.1", optional = true }
+anyhow = { version = "1.0.102", optional = true }
+
+[[bin]]
+name = "veyo-eval"
+required-features = ["decode"]

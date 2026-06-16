@@ -1,0 +1,28 @@
+# veyo — Cargo workspace.
+# Phase 0 ships only `veyo-core` (pure, no-I/O) — the schema + FSM + salience the
+# eval harness drives offline. The remaining crates from the architecture doc
+# (veyo-capture, veyo-enrich, veyo-store, veyo-mcp, veyo-eval, bins/veyod) join in
+# their phases; they're listed here as commented members so the layout is explicit.
+[workspace]
+resolver = "2"
+members = [
+    "crates/veyo-core",
+    "crates/veyo-eval",       # Phase 0: offline replay + scoring + tuning
+    # "crates/veyo-capture",  # Phase 1
+    # "crates/veyo-mcp",      # Phase 1
+    # "crates/veyo-store",    # Phase 3
+    # "crates/veyo-enrich",   # Phase 3 (optional feature)
+    # "bins/veyod",           # Phase 1
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"          # open-core: permissive core daemon + schema
+repository = "https://github.com/rsx/veyo"
+rust-version = "1.80"
+
+# Shared dependency versions, pinned. Verified against crates.io at scaffold time.
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
