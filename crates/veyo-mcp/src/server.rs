@@ -43,6 +43,15 @@ struct QueryEventsParams {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SearchEventsParams {
+    /// FTS5 query string. Supports prefix queries (foo*), phrase queries ("foo bar"),
+    /// and boolean operators (foo NOT bar).
+    query: String,
+    /// Max events to return (default 20).
+    limit: Option<usize>,
+}
+
 // ---------------------------------------------------------------------------
 // MCP handler
 // ---------------------------------------------------------------------------
@@ -131,6 +140,69 @@ impl VeyoHandler {
         // Fallback: in-memory buffer, no time-range or kind filter.
         let events = self.mem.since(since_ms.unwrap_or(0), limit.or(Some(100)));
         serde_json::to_string_pretty(&events).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    /// Full-text search across event summaries, app names, and window titles.
+    /// Requires veyod started with --store-path. Returns events matching the query
+    /// ordered by timestamp ascending.
+    #[tool(
+        description = "Full-text search veyo events by summary, app name, or window title. Requires --store-path."
+    )]
+    fn search_events(
+        &self,
+        Parameters(SearchEventsParams { query, limit }): Parameters<SearchEventsParams>,
+    ) -> String {
+        #[cfg(feature = "persist")]
+        if let Some(ref sql) = self.sql {
+            return match sql.search(&query, limit.unwrap_or(20)) {
+                Ok(events) => serde_json::to_string_pretty(&events)
+                    .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+                Err(e) => format!("{{\"error\":\"{e}\"}}"),
+            };
+        }
+        "{\"error\":\"search_events requires --store-path\"}".into()
+    }
+
+    /// Return a one-liner health snapshot: buffer size, store count, and the most
+    /// recent event summary. Call this first to orient yourself before querying.
+    #[tool(description = "Return a concise health snapshot of the veyo event buffer and store.")]
+    fn get_state(&self) -> String {
+        let buf_len = self.mem.len();
+        let latest = self.mem.latest(1);
+        let last_summary = latest
+            .first()
+            .map(|d| d.summary.as_str())
+            .unwrap_or("(none)");
+        let last_t = latest
+            .first()
+            .map(|d| d.t_event.to_string())
+            .unwrap_or_else(|| "—".into());
+
+        #[cfg(feature = "persist")]
+        {
+            let store_count = self
+                .sql
+                .as_ref()
+                .and_then(|s| s.count().ok())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into());
+            return serde_json::json!({
+                "buffer_events": buf_len,
+                "store_events": store_count,
+                "last_t_ms": last_t,
+                "last_summary": last_summary,
+            })
+            .to_string();
+        }
+
+        #[cfg(not(feature = "persist"))]
+        serde_json::json!({
+            "buffer_events": buf_len,
+            "store_events": "—",
+            "last_t_ms": last_t,
+            "last_summary": last_summary,
+        })
+        .to_string()
     }
 }
 

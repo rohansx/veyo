@@ -221,7 +221,7 @@ impl Codec {
     fn single_delta(&mut self, it: &Intent, t: TimeMs) -> Delta {
         self.seq += 1;
         let reference = self.regions[it.region].reference.clone();
-        let summary = summary_for(&it.kind, &reference.id, it.duration);
+        let summary = summary_for(&it.kind, &reference.id, it.duration, &self.surface);
         Delta {
             v: SCHEMA_V,
             id: EventId(format!("ev_{:012}", self.seq)),
@@ -271,7 +271,10 @@ impl Codec {
                 grid: [255, 255],
                 bounds,
             },
-            summary: format!("{n} regions {verb}"),
+            summary: {
+                let ctx = surface_ctx(&self.surface);
+                format!("{n} regions {verb}{ctx}")
+            },
             salience,
             novelty,
             duration_ms: duration,
@@ -303,16 +306,34 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
     }
 }
 
-fn summary_for(kind: &EventKind, region_id: &str, duration: Option<u32>) -> String {
+/// Build a human-readable summary the LLM reads. Include surface context so
+/// summaries are self-contained without looking up the surface field.
+fn summary_for(
+    kind: &EventKind,
+    region_id: &str,
+    duration: Option<u32>,
+    surface: &SurfaceRef,
+) -> String {
+    let ctx = surface_ctx(surface);
     match kind {
-        EventKind::RegionChange => format!("region {region_id} started changing"),
-        EventKind::StateSettle => {
-            format!(
-                "region {region_id} settled after {}ms",
-                duration.unwrap_or(0)
-            )
-        }
-        other => format!("region {region_id}: {other:?}"),
+        EventKind::RegionChange => format!("region {region_id} started changing{ctx}"),
+        EventKind::StateSettle => format!(
+            "region {region_id} settled after {}ms{ctx}",
+            duration.unwrap_or(0)
+        ),
+        other => format!("region {region_id}: {other:?}{ctx}"),
+    }
+}
+
+/// Returns " in App — Title" when the surface has a meaningful app/title.
+fn surface_ctx(s: &SurfaceRef) -> String {
+    let app = s.app.trim();
+    let title = s.title.trim();
+    match (app.is_empty(), title.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!(" in {app}"),
+        (true, false) => format!(" — {title}"),
+        (false, false) => format!(" in {app} — {title}"),
     }
 }
 

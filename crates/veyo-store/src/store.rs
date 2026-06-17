@@ -27,10 +27,21 @@ CREATE TABLE IF NOT EXISTS events (
     duration_ms   INTEGER,
     payload       TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_t_event  ON events(t_event);
-CREATE INDEX IF NOT EXISTS idx_kind     ON events(kind);
-CREATE INDEX IF NOT EXISTS idx_surface  ON events(surface_id);
-CREATE INDEX IF NOT EXISTS idx_summary_fts ON events(summary);
+CREATE INDEX IF NOT EXISTS idx_t_event ON events(t_event);
+CREATE INDEX IF NOT EXISTS idx_kind    ON events(kind);
+CREATE INDEX IF NOT EXISTS idx_surface ON events(surface_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    summary,
+    surface_app,
+    surface_title,
+    content='events',
+    content_rowid='rowid'
+);
+CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events BEGIN
+    INSERT INTO events_fts(rowid, summary, surface_app, surface_title)
+    VALUES (new.rowid, new.summary, new.surface_app, new.surface_title);
+END;
 ";
 
 // ---------------------------------------------------------------------------
@@ -180,6 +191,35 @@ impl EventStore {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .context("counting events")?;
         Ok(n as u64)
+    }
+
+    /// Full-text search across summary, surface_app, and surface_title.
+    ///
+    /// Uses the FTS5 `events_fts` table. The `query` string is passed verbatim to
+    /// SQLite FTS5 — supports prefix queries (`foo*`), phrase queries (`"foo bar"`),
+    /// and boolean operators (`foo NOT bar`).
+    pub fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<Delta>> {
+        let conn = self.0.lock().unwrap();
+        let sql = "
+            SELECT e.payload FROM events e
+            JOIN events_fts f ON e.rowid = f.rowid
+            WHERE events_fts MATCH ?1
+            ORDER BY e.t_event ASC
+            LIMIT ?2
+        ";
+        let mut stmt = conn.prepare(sql).context("preparing fts search")?;
+        let rows = stmt
+            .query_map(params![query, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .context("executing fts search")?;
+        let mut out = Vec::new();
+        for row in rows {
+            let json = row.context("reading fts row")?;
+            let delta: Delta = serde_json::from_str(&json).context("deserializing fts result")?;
+            out.push(delta);
+        }
+        Ok(out)
     }
 }
 
@@ -379,6 +419,32 @@ mod tests {
         assert_eq!(out[0].t_event, 9999);
         assert_eq!(out[0].kind, EventKind::StateSettle);
         assert!((out[0].salience - 0.8).abs() < 1e-4);
+    }
+
+    #[test]
+    fn fts_search_finds_matching_summary() {
+        let s = store();
+        let mut e1 = dummy("ev_fts1", 1000, EventKind::RegionChange);
+        e1.summary = "region r_0 started changing in Firefox — GitHub PR review".into();
+        e1.surface.app = "firefox".into();
+        e1.surface.title = "GitHub PR review".into();
+        let mut e2 = dummy("ev_fts2", 2000, EventKind::StateSettle);
+        e2.summary = "region r_1 settled after 500ms in Terminal".into();
+        e2.surface.app = "terminal".into();
+        e2.surface.title = String::new();
+        s.insert(&e1).unwrap();
+        s.insert(&e2).unwrap();
+
+        let hits = s.search("GitHub", 10).unwrap();
+        assert_eq!(hits.len(), 1, "only the GitHub event should match");
+        assert_eq!(hits[0].id.0, "ev_fts1");
+
+        let hits2 = s.search("terminal", 10).unwrap();
+        assert_eq!(hits2.len(), 1);
+        assert_eq!(hits2[0].id.0, "ev_fts2");
+
+        let all = s.search("region", 10).unwrap();
+        assert_eq!(all.len(), 2, "both events mention 'region' in summary");
     }
 
     #[test]
