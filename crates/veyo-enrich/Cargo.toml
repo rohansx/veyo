@@ -1,0 +1,15 @@
+[package]
+name = "veyo-enrich"
+description = "veyo's enrichment layer: transcript · OCR · salient-frame captioning. Turns veyo-core's structural deltas into agent-legible meaning. Pluggable backends; runs offline by default."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+veyo-core = { path = "../veyo-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

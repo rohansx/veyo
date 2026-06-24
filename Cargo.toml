@@ -12,8 +12,7 @@ members = [
     "crates/veyo-mcp",        # Phase 1: MCP server
     "crates/veyo-store",      # Phase 1+: sqlite event persistence
     "bins/veyod",             # Phase 1: daemon binary
-    # "crates/veyo-enrich",   # Phase 3 (optional feature)
-    # "crates/veyo-enrich",   # Phase 3 (optional feature)
+    "crates/veyo-enrich",     # enrichment: transcript · OCR · salient-frame caption (drives clipxd's index)
 ]
 
 [workspace.package]
