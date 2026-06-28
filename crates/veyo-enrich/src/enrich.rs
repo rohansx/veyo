@@ -13,7 +13,7 @@ use crate::transcribe::{NullTranscriber, Transcriber};
 use crate::types::{CaptionContext, EnrichedMoment, Enrichment, OcrSpan, SalientFrame};
 use anyhow::Result;
 use std::path::Path;
-use veyo_core::{Delta, EventKind, TimeMs};
+use veyo_core::{Delta, EventKind, Rect, TimeMs};
 
 /// How close (ms) an OCR span must be to a delta to count as "on screen at that moment".
 const NEAR_MS: TimeMs = 750;
@@ -101,38 +101,63 @@ impl Enricher {
             }
         }
 
-        // 3. visual timeline — one captioned moment per salient delta. Pre-compute the
-        //    near-text + nearest frame for each (kept alive for a single batched caption call,
-        //    so a VLM loads its model once instead of per-moment).
-        let near_texts: Vec<Vec<OcrSpan>> =
-            input.deltas.iter().map(|d| near_text(&on_screen_text, d.t_event, NEAR_MS)).collect();
-        let frames: Vec<Option<&std::path::Path>> =
-            input.deltas.iter().map(|d| nearest_frame(input.frames, d.t_event).map(|f| f.path.as_path())).collect();
-        let ctxs: Vec<CaptionContext> = input
-            .deltas
-            .iter()
-            .enumerate()
-            .map(|(i, d)| CaptionContext {
-                delta_kind: kind_str(d.kind),
-                summary: &d.summary,
+        // 3. visual timeline — caption every salient moment. Primary moments are veyo's deltas
+        //    (they carry region + salience for zoom-aware captions); we ALSO caption any
+        //    keyframe-floor frame that no delta lands on, so a colour-only / persistent scene
+        //    still gets a description (not just OCR). One batched call loads a VLM once.
+        let mut seeds: Vec<MomentSeed> = Vec::new();
+        let mut covered: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+        for d in input.deltas {
+            let frame = nearest_frame(input.frames, d.t_event).map(|f| f.path.as_path());
+            if let Some(p) = frame {
+                covered.insert(p);
+            }
+            seeds.push(MomentSeed {
+                t_ms: d.t_event,
                 salience: d.salience,
+                kind: kind_str(d.kind),
                 region: d.region.bounds,
-                on_screen_text: &near_texts[i],
-                frame: frames[i],
+                frame,
+                summary: d.summary.clone(),
+                near_text: near_text(&on_screen_text, d.t_event, NEAR_MS),
+            });
+        }
+        for f in input.frames {
+            if !covered.contains(f.path.as_path()) {
+                seeds.push(MomentSeed {
+                    t_ms: f.t_ms,
+                    salience: 0.0,
+                    kind: "keyframe",
+                    region: Rect { x: 0, y: 0, w: 0, h: 0 },
+                    frame: Some(f.path.as_path()),
+                    summary: String::new(),
+                    near_text: near_text(&on_screen_text, f.t_ms, NEAR_MS),
+                });
+            }
+        }
+        seeds.sort_by_key(|s| s.t_ms);
+        let ctxs: Vec<CaptionContext> = seeds
+            .iter()
+            .map(|s| CaptionContext {
+                delta_kind: s.kind,
+                summary: &s.summary,
+                salience: s.salience,
+                region: s.region,
+                on_screen_text: &s.near_text,
+                frame: s.frame,
             })
             .collect();
         let captions = self.captioner.caption_batch(&ctxs)?;
-        let visual_timeline: Vec<EnrichedMoment> = input
-            .deltas
+        let visual_timeline: Vec<EnrichedMoment> = seeds
             .iter()
             .enumerate()
-            .map(|(i, d)| EnrichedMoment {
-                t_ms: d.t_event,
-                salience: d.salience,
+            .map(|(i, s)| EnrichedMoment {
+                t_ms: s.t_ms,
+                salience: s.salience,
                 caption: captions.get(i).cloned().unwrap_or_default(),
-                delta_kind: kind_str(d.kind).to_string(),
-                region: d.region.bounds,
-                frame_ref: frames[i].map(|p| p.display().to_string()),
+                delta_kind: s.kind.to_string(),
+                region: s.region,
+                frame_ref: s.frame.map(|p| p.display().to_string()),
             })
             .collect();
 
@@ -155,6 +180,17 @@ fn kind_str(k: EventKind) -> &'static str {
         EventKind::Active => "active",
         EventKind::Anomaly => "anomaly",
     }
+}
+
+/// One moment to caption — either a veyo delta or a keyframe-floor frame with no delta.
+struct MomentSeed<'a> {
+    t_ms: TimeMs,
+    salience: f32,
+    kind: &'static str,
+    region: Rect,
+    frame: Option<&'a Path>,
+    summary: String,
+    near_text: Vec<OcrSpan>,
 }
 
 /// OCR spans within `window` ms of `t`, cloned for handing to a captioner.
