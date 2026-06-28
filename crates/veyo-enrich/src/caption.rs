@@ -106,12 +106,15 @@ const MOONDREAM_SIDECAR: &str = r#"
 import sys, json, os
 
 def load_model():
-    try:
-        import moondream as md
-        mp = os.environ.get("MOONDREAM_MODEL")
-        return ("md", md.vl(model=mp) if mp else md.vl(), None)
-    except Exception:
-        pass
+    # the `moondream` package is only for an explicit local .mf model; its bare vl() defaults
+    # to the CLOUD API, which we never want here — so fall through to transformers otherwise.
+    mp = os.environ.get("MOONDREAM_MODEL")
+    if mp and mp.endswith(".mf"):
+        try:
+            import moondream as md
+            return ("md", md.vl(model=mp), None)
+        except Exception:
+            pass
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     cuda = torch.cuda.is_available()
@@ -192,7 +195,12 @@ impl MoondreamCaptioner {
                 .unwrap_or(false)
         };
         let opted_in = std::env::var("CLIPXD_MOONDREAM").map(|v| !v.is_empty() && v != "0").unwrap_or(false);
-        if !(import_ok("moondream") || (opted_in && import_ok("transformers"))) {
+        // auto-enable the transformers path when the model is ALREADY cached locally (no
+        // surprise multi-GB download); `CLIPXD_MOONDREAM=1` forces it even before that.
+        let cached = std::env::var("HOME")
+            .map(|h| std::path::Path::new(&h).join(".cache/huggingface/hub/models--vikhyatk--moondream2").exists())
+            .unwrap_or(false);
+        if !(import_ok("moondream") || (import_ok("transformers") && (opted_in || cached))) {
             return None;
         }
         let d = Self::default();
