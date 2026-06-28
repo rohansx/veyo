@@ -7,7 +7,7 @@
 //! 3. for each salient delta, caption it grounded in the OCR text nearest in time,
 //!    attaching the closest retained frame → `visual_timeline`
 
-use crate::caption::{Captioner, HeuristicCaptioner};
+use crate::caption::{Captioner, HeuristicCaptioner, MoondreamCaptioner};
 use crate::ocr::{NullOcr, Ocr, PaddleOcr, TesseractCliOcr};
 use crate::transcribe::{NullTranscriber, Transcriber};
 use crate::types::{CaptionContext, EnrichedMoment, Enrichment, OcrSpan, SalientFrame};
@@ -58,7 +58,11 @@ impl Enricher {
         } else {
             Box::new(NullOcr)
         };
-        Self::new(Box::new(NullTranscriber), ocr, Box::new(HeuristicCaptioner::new()))
+        let captioner: Box<dyn Captioner> = match MoondreamCaptioner::detect() {
+            Some(m) => Box::new(m),
+            None => Box::new(HeuristicCaptioner::new()),
+        };
+        Self::new(Box::new(NullTranscriber), ocr, captioner)
     }
 
     /// The `(transcriber, ocr, captioner)` backend names — handy for logging what's wired.
@@ -90,29 +94,40 @@ impl Enricher {
             }
         }
 
-        // 3. visual timeline — one captioned moment per salient delta.
-        let mut visual_timeline = Vec::with_capacity(input.deltas.len());
-        for d in input.deltas {
-            let near = near_text(&on_screen_text, d.t_event, NEAR_MS);
-            let frame_ref =
-                nearest_frame(input.frames, d.t_event).map(|f| f.path.display().to_string());
-            let kind = kind_str(d.kind);
-            let caption = self.captioner.caption(&CaptionContext {
-                delta_kind: kind,
+        // 3. visual timeline — one captioned moment per salient delta. Pre-compute the
+        //    near-text + nearest frame for each (kept alive for a single batched caption call,
+        //    so a VLM loads its model once instead of per-moment).
+        let near_texts: Vec<Vec<OcrSpan>> =
+            input.deltas.iter().map(|d| near_text(&on_screen_text, d.t_event, NEAR_MS)).collect();
+        let frames: Vec<Option<&std::path::Path>> =
+            input.deltas.iter().map(|d| nearest_frame(input.frames, d.t_event).map(|f| f.path.as_path())).collect();
+        let ctxs: Vec<CaptionContext> = input
+            .deltas
+            .iter()
+            .enumerate()
+            .map(|(i, d)| CaptionContext {
+                delta_kind: kind_str(d.kind),
                 summary: &d.summary,
                 salience: d.salience,
                 region: d.region.bounds,
-                on_screen_text: &near,
-            })?;
-            visual_timeline.push(EnrichedMoment {
+                on_screen_text: &near_texts[i],
+                frame: frames[i],
+            })
+            .collect();
+        let captions = self.captioner.caption_batch(&ctxs)?;
+        let visual_timeline: Vec<EnrichedMoment> = input
+            .deltas
+            .iter()
+            .enumerate()
+            .map(|(i, d)| EnrichedMoment {
                 t_ms: d.t_event,
                 salience: d.salience,
-                caption,
-                delta_kind: kind.to_string(),
+                caption: captions.get(i).cloned().unwrap_or_default(),
+                delta_kind: kind_str(d.kind).to_string(),
                 region: d.region.bounds,
-                frame_ref,
-            });
-        }
+                frame_ref: frames[i].map(|p| p.display().to_string()),
+            })
+            .collect();
 
         Ok(Enrichment {
             transcript,

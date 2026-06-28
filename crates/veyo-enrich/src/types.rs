@@ -5,7 +5,7 @@
 //! clipxd → veyo-enrich → veyo-core. A consumer maps these into its own index shape.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use veyo_core::{Rect, TimeMs};
 
 /// A time-aligned span of transcribed speech.
@@ -83,4 +83,7 @@ pub struct CaptionContext<'a> {
     /// On-screen text near this moment in time, already OCR'd — lets a caption be
     /// grounded in what was actually visible.
     pub on_screen_text: &'a [OcrSpan],
+    /// The salient frame image nearest this moment — what a VLM captioner reads. `None`
+    /// when the caller retained no frame (the heuristic captioner ignores it).
+    pub frame: Option<&'a Path>,
 }
