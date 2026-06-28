@@ -112,8 +112,16 @@ def load_model():
         return ("md", md.vl(model=mp) if mp else md.vl(), None)
     except Exception:
         pass
+    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    model = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True)
+    cuda = torch.cuda.is_available()
+    model = AutoModelForCausalLM.from_pretrained(
+        "vikhyatk/moondream2",
+        trust_remote_code=True,
+        torch_dtype=(torch.float16 if cuda else torch.float32),
+    )
+    if cuda:
+        model = model.to("cuda")  # fp16 on the GPU (~4.5GB VRAM); else CPU fp32
     try:
         tok = AutoTokenizer.from_pretrained("vikhyatk/moondream2")
     except Exception:
