@@ -28,7 +28,7 @@ pub mod ocr;
 pub mod transcribe;
 pub mod types;
 
-pub use caption::{Captioner, HeuristicCaptioner, MoondreamCaptioner};
+pub use caption::{Captioner, HeuristicCaptioner, MoondreamCaptioner, OpenRouterCaptioner, RemoteCaptioner};
 pub use enrich::{EnrichInput, Enricher};
 pub use ocr::{NullOcr, Ocr, PaddleOcr, TesseractCliOcr};
 pub use transcribe::{NullTranscriber, Transcriber, WhisperCppTranscriber};

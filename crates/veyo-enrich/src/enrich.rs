@@ -7,7 +7,7 @@
 //! 3. for each salient delta, caption it grounded in the OCR text nearest in time,
 //!    attaching the closest retained frame → `visual_timeline`
 
-use crate::caption::{Captioner, HeuristicCaptioner, MoondreamCaptioner};
+use crate::caption::{Captioner, HeuristicCaptioner, MoondreamCaptioner, OpenRouterCaptioner, RemoteCaptioner};
 use crate::ocr::{NullOcr, Ocr, PaddleOcr, TesseractCliOcr};
 use crate::transcribe::{NullTranscriber, Transcriber};
 use crate::types::{CaptionContext, EnrichedMoment, Enrichment, OcrSpan, SalientFrame};
@@ -58,9 +58,16 @@ impl Enricher {
         } else {
             Box::new(NullOcr)
         };
-        let captioner: Box<dyn Captioner> = match MoondreamCaptioner::detect() {
-            Some(m) => Box::new(m),
-            None => Box::new(HeuristicCaptioner::new()),
+        // captions, best available: self-hosted server (CLIPXD_CAPTION_URL) → OpenRouter
+        // (OPENROUTER_API_KEY, for testing) → local Moondream2 → heuristic.
+        let captioner: Box<dyn Captioner> = if let Some(r) = RemoteCaptioner::detect() {
+            Box::new(r)
+        } else if let Some(o) = OpenRouterCaptioner::detect() {
+            Box::new(o)
+        } else if let Some(m) = MoondreamCaptioner::detect() {
+            Box::new(m)
+        } else {
+            Box::new(HeuristicCaptioner::new())
         };
         Self::new(Box::new(NullTranscriber), ocr, captioner)
     }

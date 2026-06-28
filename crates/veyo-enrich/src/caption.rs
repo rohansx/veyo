@@ -203,37 +203,225 @@ impl Captioner for MoondreamCaptioner {
     }
 
     fn caption_batch(&self, ctxs: &[CaptionContext]) -> Result<Vec<String>> {
-        let frames: Vec<serde_json::Value> = ctxs
-            .iter()
-            .map(|c| {
-                let hint = c.on_screen_text.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" / ");
-                serde_json::json!({ "path": c.frame.map(|p| p.display().to_string()), "hint": hint })
-            })
-            .collect();
-        let req = serde_json::json!({ "prompt": self.prompt, "frames": frames }).to_string();
+        let req = serde_json::json!({ "prompt": self.prompt, "frames": frame_payload(ctxs) }).to_string();
+        run_caption_sidecar(&self.python, &self.script, &req, ctxs)
+    }
+}
 
-        let mut child = Command::new(&self.python)
-            .arg(&self.script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("failed to spawn moondream sidecar via `{}`", self.python))?;
-        child.stdin.take().context("no stdin")?.write_all(req.as_bytes())?;
-        let out = child.wait_with_output()?;
-        if !out.status.success() {
-            anyhow::bail!("moondream sidecar failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        let caps: Vec<String> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+/// The `[{path, hint}]` array a caption sidecar consumes (hint = nearby OCR text).
+fn frame_payload(ctxs: &[CaptionContext]) -> Vec<serde_json::Value> {
+    ctxs.iter()
+        .map(|c| {
+            let hint = c.on_screen_text.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" / ");
+            serde_json::json!({ "path": c.frame.map(|p| p.display().to_string()), "hint": hint })
+        })
+        .collect()
+}
 
-        // per-frame: use the VLM caption, else fall back to the heuristic (never worse).
-        let heuristic = HeuristicCaptioner::new();
-        let mut result = Vec::with_capacity(ctxs.len());
-        for (i, ctx) in ctxs.iter().enumerate() {
-            let cap = caps.get(i).map(|s| s.trim().to_string()).unwrap_or_default();
-            result.push(if cap.is_empty() { heuristic.caption(ctx)? } else { cap });
-        }
-        Ok(result)
+/// Spawn a caption sidecar, feed it `request` JSON on stdin, read its JSON `[caption,...]`,
+/// and fall back to the heuristic caption for any frame that comes back empty (never worse).
+fn run_caption_sidecar(python: &str, script: &std::path::Path, request: &str, ctxs: &[CaptionContext]) -> Result<Vec<String>> {
+    let mut child = Command::new(python)
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to spawn caption sidecar via `{python}`"))?;
+    child.stdin.take().context("no stdin")?.write_all(request.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        anyhow::bail!("caption sidecar failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let caps: Vec<String> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let heuristic = HeuristicCaptioner::new();
+    let mut result = Vec::with_capacity(ctxs.len());
+    for (i, ctx) in ctxs.iter().enumerate() {
+        let cap = caps.get(i).map(|s| s.trim().to_string()).unwrap_or_default();
+        result.push(if cap.is_empty() { heuristic.caption(ctx)? } else { cap });
+    }
+    Ok(result)
+}
+
+/// Captions from a **self-hosted** caption server (e.g. Moondream2 on your VPS), enabled by
+/// `CLIPXD_CAPTION_URL` (+ optional `CLIPXD_TOKEN`). Offloads the heavy model to your own
+/// infrastructure — useful on weak local connections — while keeping it out of third parties'
+/// hands. A stdlib-`urllib` sidecar base64-encodes the salient frames and POSTs them in one
+/// batch to `<url>/caption`. Per-frame fallback to the heuristic caption on any failure.
+#[derive(Debug, Clone)]
+pub struct RemoteCaptioner {
+    pub python: String,
+    pub script: PathBuf,
+    pub url: String,
+    pub token: String,
+    pub prompt: String,
+}
+
+const REMOTE_SIDECAR: &str = r#"
+import sys, json, base64, urllib.request
+
+def main():
+    req = json.load(sys.stdin)
+    url = req["url"].rstrip("/") + "/caption"
+    token = req.get("token") or ""
+    frames = []
+    for f in req.get("frames", []):
+        b64 = ""
+        p = f.get("path")
+        if p:
+            try:
+                with open(p, "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode("ascii")
+            except Exception:
+                b64 = ""
+        frames.append({"b64": b64})
+    payload = json.dumps({"prompt": req.get("prompt") or "", "frames": frames}).encode()
+    r = urllib.request.Request(url, data=payload, headers={"content-type": "application/json"})
+    if token:
+        r.add_header("authorization", "Bearer " + token)
+    caps = []
+    try:
+        with urllib.request.urlopen(r, timeout=180) as resp:
+            caps = json.load(resp)
+    except Exception as e:
+        sys.stderr.write(str(e))
+        caps = []
+    print(json.dumps(caps if isinstance(caps, list) else []))
+
+main()
+"#;
+
+impl RemoteCaptioner {
+    /// Enabled when `CLIPXD_CAPTION_URL` is set and a Python is available. Writes the sidecar.
+    pub fn detect() -> Option<Self> {
+        let url = std::env::var("CLIPXD_CAPTION_URL").ok().filter(|u| !u.is_empty())?;
+        let python = ["python3", "python"].into_iter().find(|p| detect_binary(p))?;
+        let script = std::env::temp_dir().join("veyo-remote-caption.py");
+        std::fs::write(&script, REMOTE_SIDECAR).ok()?;
+        Some(Self {
+            python: python.into(),
+            script,
+            url,
+            token: std::env::var("CLIPXD_TOKEN").unwrap_or_default(),
+            prompt: "Describe what is happening on this screen in one concise sentence.".into(),
+        })
+    }
+}
+
+impl Captioner for RemoteCaptioner {
+    fn caption(&self, ctx: &CaptionContext) -> Result<String> {
+        Ok(self.caption_batch(std::slice::from_ref(ctx))?.into_iter().next().unwrap_or_default())
+    }
+
+    fn name(&self) -> &'static str {
+        "remote"
+    }
+
+    fn caption_batch(&self, ctxs: &[CaptionContext]) -> Result<Vec<String>> {
+        let req = serde_json::json!({
+            "url": self.url,
+            "token": self.token,
+            "prompt": self.prompt,
+            "frames": frame_payload(ctxs),
+        })
+        .to_string();
+        run_caption_sidecar(&self.python, &self.script, &req, ctxs)
+    }
+}
+
+/// Captions via **OpenRouter** (any hosted vision model — `gpt-4o-mini`, `gemini-flash`,
+/// `qwen-2-vl`, …). The fastest way to *test* the caption feature end-to-end: no model
+/// download, no GPU. Enabled by `OPENROUTER_API_KEY` (+ optional `OPENROUTER_VLM_MODEL`).
+/// Frames go to a third party — a **testing/opt-in** path; local Moondream stays the private
+/// default. A stdlib-`urllib` sidecar sends each frame to the chat-completions endpoint.
+#[derive(Debug, Clone)]
+pub struct OpenRouterCaptioner {
+    pub python: String,
+    pub script: PathBuf,
+    pub api_key: String,
+    pub model: String,
+    pub prompt: String,
+}
+
+const OPENROUTER_SIDECAR: &str = r#"
+import sys, json, base64, urllib.request
+
+def main():
+    req = json.load(sys.stdin)
+    key = req["api_key"]
+    model = req.get("model") or "openai/gpt-4o-mini"
+    prompt = req.get("prompt") or "Describe what is happening on this screen in one concise sentence."
+    out = []
+    for f in req.get("frames", []):
+        cap = ""
+        p = f.get("path")
+        if p:
+            try:
+                with open(p, "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode("ascii")
+                payload = {
+                    "model": model,
+                    "max_tokens": 80,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+                    ]}],
+                }
+                r = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    data=json.dumps(payload).encode(),
+                    headers={"content-type": "application/json",
+                             "authorization": "Bearer " + key,
+                             "x-title": "clipxd"},
+                )
+                with urllib.request.urlopen(r, timeout=90) as resp:
+                    j = json.load(resp)
+                cap = (j["choices"][0]["message"]["content"] or "").strip()
+            except Exception as e:
+                sys.stderr.write(str(e) + "\n")
+                cap = ""
+        out.append(cap)
+    print(json.dumps(out))
+
+main()
+"#;
+
+impl OpenRouterCaptioner {
+    /// Enabled when `OPENROUTER_API_KEY` is set. Model from `OPENROUTER_VLM_MODEL` (default a
+    /// cheap, strong vision model). Writes the sidecar.
+    pub fn detect() -> Option<Self> {
+        let api_key = std::env::var("OPENROUTER_API_KEY").ok().filter(|k| !k.is_empty())?;
+        let python = ["python3", "python"].into_iter().find(|p| detect_binary(p))?;
+        let script = std::env::temp_dir().join("veyo-openrouter-caption.py");
+        std::fs::write(&script, OPENROUTER_SIDECAR).ok()?;
+        Some(Self {
+            python: python.into(),
+            script,
+            api_key,
+            model: std::env::var("OPENROUTER_VLM_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".into()),
+            prompt: "Describe what is happening on this screen in one concise sentence.".into(),
+        })
+    }
+}
+
+impl Captioner for OpenRouterCaptioner {
+    fn caption(&self, ctx: &CaptionContext) -> Result<String> {
+        Ok(self.caption_batch(std::slice::from_ref(ctx))?.into_iter().next().unwrap_or_default())
+    }
+
+    fn name(&self) -> &'static str {
+        "openrouter"
+    }
+
+    fn caption_batch(&self, ctxs: &[CaptionContext]) -> Result<Vec<String>> {
+        let req = serde_json::json!({
+            "api_key": self.api_key,
+            "model": self.model,
+            "prompt": self.prompt,
+            "frames": frame_payload(ctxs),
+        })
+        .to_string();
+        run_caption_sidecar(&self.python, &self.script, &req, ctxs)
     }
 }
 
