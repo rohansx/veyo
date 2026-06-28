@@ -117,7 +117,10 @@ def run(path, lang):
     from paddleocr import PaddleOCR
     ocr = None
     # try 2.x kwargs first (use_angle_cls/show_log), fall through to 3.x-safe (lang only)
-    for kw in ({"use_angle_cls": True, "lang": lang, "show_log": False},
+    # enable_mkldnn=False avoids a paddle 3.x oneDNN CPU crash (ConvertPirAttribute2RuntimeAttribute)
+    for kw in ({"lang": lang, "enable_mkldnn": False},
+               {"use_angle_cls": True, "lang": lang, "enable_mkldnn": False},
+               {"use_angle_cls": True, "lang": lang, "show_log": False},
                {"use_angle_cls": True, "lang": lang},
                {"lang": lang}, {}):
         try:
