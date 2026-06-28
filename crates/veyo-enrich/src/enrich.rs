@@ -8,7 +8,7 @@
 //!    attaching the closest retained frame → `visual_timeline`
 
 use crate::caption::{Captioner, HeuristicCaptioner};
-use crate::ocr::{NullOcr, Ocr, TesseractCliOcr};
+use crate::ocr::{NullOcr, Ocr, PaddleOcr, TesseractCliOcr};
 use crate::transcribe::{NullTranscriber, Transcriber};
 use crate::types::{CaptionContext, EnrichedMoment, Enrichment, OcrSpan, SalientFrame};
 use anyhow::Result;
@@ -46,19 +46,19 @@ impl Enricher {
         }
     }
 
-    /// Auto-detect the best locally-available backends: `tesseract` for OCR when it's on
-    /// `PATH`, the heuristic captioner, and a null transcriber (no audio model assumed).
-    /// This is the offline default that works on a fresh machine.
+    /// Auto-detect the best locally-available backends, all offline/on-device: OCR prefers
+    /// **PaddleOCR** (PP-OCR / PaddleOCR-VL — far stronger on real screens) when a local
+    /// `paddleocr` is importable, else falls back to the system `tesseract`, else null; plus
+    /// the heuristic captioner and a null transcriber (no audio model assumed).
     pub fn with_local_defaults() -> Self {
-        let ocr: Box<dyn Ocr> = match TesseractCliOcr::detect() {
-            Some(t) => Box::new(t),
-            None => Box::new(NullOcr),
+        let ocr: Box<dyn Ocr> = if let Some(p) = PaddleOcr::detect() {
+            Box::new(p)
+        } else if let Some(t) = TesseractCliOcr::detect() {
+            Box::new(t)
+        } else {
+            Box::new(NullOcr)
         };
-        Self::new(
-            Box::new(NullTranscriber),
-            ocr,
-            Box::new(HeuristicCaptioner::new()),
-        )
+        Self::new(Box::new(NullTranscriber), ocr, Box::new(HeuristicCaptioner::new()))
     }
 
     /// The `(transcriber, ocr, captioner)` backend names — handy for logging what's wired.

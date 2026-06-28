@@ -88,6 +88,204 @@ impl Ocr for TesseractCliOcr {
     }
 }
 
+/// OCR via a local **PaddleOCR** install (PP-OCR / PaddleOCR-VL), through a bundled Python
+/// sidecar that normalizes every PaddleOCR version's output to one stable JSON contract:
+/// `[{"text": str, "conf": float(0..1), "bbox": [x,y,w,h]}]`. Fully **on-device** — nothing
+/// leaves the machine. Much stronger than tesseract on real screens (UI, code, tables, mixed
+/// layout). Selected over tesseract by [`Enricher::with_local_defaults`] when available.
+#[derive(Debug, Clone)]
+pub struct PaddleOcr {
+    pub python: String,
+    pub script: std::path::PathBuf,
+    pub lang: String,
+    /// Minimum confidence (`0..=100`) to keep a span.
+    pub min_confidence: f32,
+}
+
+/// The Python sidecar. Written to a temp file by [`PaddleOcr::detect`]; invoked as
+/// `python <script> <image> <lang>` and prints the JSON contract on stdout. Defensive across
+/// PaddleOCR 2.x (`.ocr`) and 3.x (`.predict`).
+const PADDLE_SIDECAR: &str = r#"
+import sys, json
+
+def to_py(x):
+    # numpy arrays/scalars -> python lists/scalars (PaddleOCR 3.x returns np.ndarray)
+    return x.tolist() if hasattr(x, "tolist") else x
+
+def run(path, lang):
+    out = []
+    from paddleocr import PaddleOCR
+    ocr = None
+    # try 2.x kwargs first (use_angle_cls/show_log), fall through to 3.x-safe (lang only)
+    for kw in ({"use_angle_cls": True, "lang": lang, "show_log": False},
+               {"use_angle_cls": True, "lang": lang},
+               {"lang": lang}, {}):
+        try:
+            ocr = PaddleOCR(**kw); break
+        except Exception:
+            ocr = None
+    if ocr is None:
+        return out
+    res = None
+    for call in (lambda: ocr.ocr(path, cls=True), lambda: ocr.ocr(path), lambda: ocr.predict(path)):
+        try:
+            r = call()
+            if r is not None:
+                res = r; break
+        except Exception:
+            res = None
+
+    def add(text, conf, box):
+        try:
+            text = (text or "").strip()
+        except Exception:
+            text = str(text)
+        if not text:
+            return
+        try:
+            c = float(conf)
+        except Exception:
+            c = 1.0
+        bb = [0, 0, 0, 0]
+        try:
+            box = to_py(box)
+            if len(box) == 4 and all(isinstance(v, (int, float)) for v in box):
+                x1, y1, x2, y2 = box            # axis-aligned [x1,y1,x2,y2] (3.x rec_boxes)
+                bb = [int(min(x1, x2)), int(min(y1, y2)), int(abs(x2 - x1)), int(abs(y2 - y1))]
+            else:
+                xs = [float(p[0]) for p in box]; ys = [float(p[1]) for p in box]   # 4 [x,y] pts
+                bb = [int(min(xs)), int(min(ys)), int(max(xs) - min(xs)), int(max(ys) - min(ys))]
+        except Exception:
+            bb = [0, 0, 0, 0]
+        out.append({"text": text, "conf": c, "bbox": bb})
+
+    def is_classic(r):
+        # 2.x: [ per-image [ [box4pts, (text,score)], ... ] ]
+        return (isinstance(r, list) and r and isinstance(r[0], list) and r[0]
+                and isinstance(r[0][0], (list, tuple)) and len(r[0][0]) == 2
+                and not isinstance(r[0][0][0], (int, float)))
+
+    if is_classic(res):
+        for page in res:
+            for ln in (page or []):
+                try:
+                    add(ln[1][0], ln[1][1], ln[0])
+                except Exception:
+                    pass
+    elif isinstance(res, list):
+        # 3.x: list of OCRResult (dict-like; or .json -> {"res": {...}})
+        def field(r, key):
+            try:
+                v = r[key]
+                if v is not None:
+                    return v
+            except Exception:
+                pass
+            j = getattr(r, "json", None)
+            cands = [j, (j.get("res") if hasattr(j, "get") else None), (r.get("res") if hasattr(r, "get") else None), (r if hasattr(r, "get") else None)]
+            for c in cands:
+                if hasattr(c, "get") and c.get(key) is not None:
+                    return c.get(key)
+            return None
+        for r in res:
+            texts = to_py(field(r, "rec_texts")) or to_py(field(r, "texts")) or []
+            scores = to_py(field(r, "rec_scores")) or to_py(field(r, "scores")) or []
+            polys = to_py(field(r, "rec_polys")) or to_py(field(r, "dt_polys")) or to_py(field(r, "rec_boxes")) or []
+            for i, t in enumerate(texts):
+                c = scores[i] if i < len(scores) else 1.0
+                b = polys[i] if i < len(polys) else [0, 0, 0, 0]
+                add(t, c, b)
+    return out
+
+try:
+    path = sys.argv[1]
+    lang = sys.argv[2] if len(sys.argv) > 2 else "en"
+    print(json.dumps(run(path, lang)))
+except Exception as e:
+    sys.stderr.write(str(e)); print("[]")
+"#;
+
+impl Default for PaddleOcr {
+    fn default() -> Self {
+        Self {
+            python: "python3".into(),
+            script: std::env::temp_dir().join("veyo-paddleocr.py"),
+            lang: "en".into(),
+            min_confidence: 50.0,
+        }
+    }
+}
+
+impl PaddleOcr {
+    /// Available iff a Python with `paddleocr` importable is on `PATH`. Writes the sidecar to
+    /// a temp file. Returns `None` (so the caller falls back to tesseract) otherwise.
+    pub fn detect() -> Option<Self> {
+        let python = ["python3", "python"].into_iter().find(|p| detect_binary(p))?;
+        // import the class (not just the package) so a missing paddlepaddle backend fails here
+        // and we fall back to tesseract, rather than silently producing empty OCR per frame.
+        let importable = Command::new(python)
+            .args(["-c", "from paddleocr import PaddleOCR"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !importable {
+            return None;
+        }
+        let script = std::env::temp_dir().join("veyo-paddleocr.py");
+        std::fs::write(&script, PADDLE_SIDECAR).ok()?;
+        Some(Self { python: python.into(), script, ..Default::default() })
+    }
+}
+
+impl Ocr for PaddleOcr {
+    fn extract(&self, path: &Path, t_ms: TimeMs) -> Result<Vec<OcrSpan>> {
+        let out = Command::new(&self.python)
+            .arg(&self.script)
+            .arg(path)
+            .arg(&self.lang)
+            .output()
+            .with_context(|| format!("failed to run paddleocr sidecar via `{}`", self.python))?;
+        if !out.status.success() {
+            anyhow::bail!("paddleocr sidecar failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(parse_paddle_json(&String::from_utf8_lossy(&out.stdout), t_ms, self.min_confidence))
+    }
+    fn name(&self) -> &'static str {
+        "paddleocr"
+    }
+}
+
+/// Parse the sidecar's JSON contract into [`OcrSpan`]s. Confidence is normalized to `0..=100`
+/// (PaddleOCR reports `0..1`). Pure and unit-tested.
+pub fn parse_paddle_json(json: &str, t_ms: TimeMs, min_conf: f32) -> Vec<OcrSpan> {
+    let v: serde_json::Value = match serde_json::from_str(json.trim()) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut spans = Vec::new();
+    for it in v.as_array().into_iter().flatten() {
+        let text = it.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let mut conf = it.get("conf").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32;
+        if conf <= 1.0 {
+            conf *= 100.0; // paddle reports 0..1 → normalize to 0..100
+        }
+        if conf < min_conf {
+            continue;
+        }
+        let bbox = it.get("bbox").and_then(|b| b.as_array()).filter(|a| a.len() == 4).map(|a| Rect {
+            x: a[0].as_i64().unwrap_or(0) as i32,
+            y: a[1].as_i64().unwrap_or(0) as i32,
+            w: a[2].as_i64().unwrap_or(0) as i32,
+            h: a[3].as_i64().unwrap_or(0) as i32,
+        });
+        spans.push(OcrSpan { t_ms, text, source: TextSource::Ocr, bbox, confidence: Some(conf) });
+    }
+    spans
+}
+
 /// Parse tesseract TSV output into line-level [`OcrSpan`]s. Pure and unit-tested.
 ///
 /// TSV columns: `level page block par line word left top width height conf text`.
@@ -208,5 +406,28 @@ mod tests {
     fn null_ocr_returns_nothing() {
         let p = Path::new("/nonexistent.png");
         assert!(NullOcr.extract(p, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn paddle_json_parses_normalizes_conf_and_drops_blank_and_lowconf() {
+        let j = r#"[
+            {"text":"Payment failed (500)","conf":0.97,"bbox":[320,210,460,30]},
+            {"text":"   ","conf":0.99,"bbox":[0,0,0,0]},
+            {"text":"noise","conf":0.20,"bbox":[1,1,2,2]}
+        ]"#;
+        let spans = parse_paddle_json(j, 13_000, 50.0);
+        assert_eq!(spans.len(), 1, "blank dropped, 0.20→20 dropped under min 50");
+        let s = &spans[0];
+        assert_eq!(s.text, "Payment failed (500)");
+        assert_eq!(s.t_ms, 13_000);
+        assert!((s.confidence.unwrap() - 97.0).abs() < 0.01, "0.97 normalized to 97");
+        let b = s.bbox.unwrap();
+        assert_eq!((b.x, b.y, b.w, b.h), (320, 210, 460, 30));
+    }
+
+    #[test]
+    fn paddle_json_handles_garbage() {
+        assert!(parse_paddle_json("not json", 0, 50.0).is_empty());
+        assert!(parse_paddle_json("[]", 0, 50.0).is_empty());
     }
 }

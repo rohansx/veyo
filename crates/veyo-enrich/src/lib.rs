@@ -30,7 +30,7 @@ pub mod types;
 
 pub use caption::{Captioner, HeuristicCaptioner};
 pub use enrich::{EnrichInput, Enricher};
-pub use ocr::{NullOcr, Ocr, TesseractCliOcr};
+pub use ocr::{NullOcr, Ocr, PaddleOcr, TesseractCliOcr};
 pub use transcribe::{NullTranscriber, Transcriber, WhisperCppTranscriber};
 pub use types::{
     CaptionContext, EnrichedMoment, Enrichment, OcrSpan, SalientFrame, TextSource,
