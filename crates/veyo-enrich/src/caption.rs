@@ -4,7 +4,7 @@
 
 use crate::detect_binary;
 use crate::types::CaptionContext;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -237,20 +237,32 @@ fn frame_payload(ctxs: &[CaptionContext]) -> Vec<serde_json::Value> {
 /// Spawn a caption sidecar, feed it `request` JSON on stdin, read its JSON `[caption,...]`,
 /// and fall back to the heuristic caption for any frame that comes back empty (never worse).
 fn run_caption_sidecar(python: &str, script: &std::path::Path, request: &str, ctxs: &[CaptionContext]) -> Result<Vec<String>> {
-    let mut child = Command::new(python)
-        .arg(script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to spawn caption sidecar via `{python}`"))?;
-    child.stdin.take().context("no stdin")?.write_all(request.as_bytes())?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        anyhow::bail!("caption sidecar failed: {}", String::from_utf8_lossy(&out.stderr));
-    }
-    let caps: Vec<String> = serde_json::from_slice(&out.stdout).unwrap_or_default();
     let heuristic = HeuristicCaptioner::new();
+    // Captioning must NEVER fail the whole pipeline — a dead/unreachable caption server or a
+    // crashing sidecar should degrade to heuristic captions, not lose the recording. So every
+    // failure path here falls back to heuristic captions for all frames instead of bailing.
+    let all_heuristic = || -> Result<Vec<String>> { ctxs.iter().map(|c| heuristic.caption(c)).collect() };
+
+    let caps: Vec<String> = (|| -> Option<Vec<String>> {
+        let mut child = Command::new(python)
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+        child.stdin.take()?.write_all(request.as_bytes()).ok()?;
+        let out = child.wait_with_output().ok()?;
+        if !out.status.success() {
+            return None; // sidecar crashed → heuristic for all
+        }
+        serde_json::from_slice(&out.stdout).ok()
+    })()
+    .unwrap_or_default();
+
+    if caps.is_empty() {
+        return all_heuristic();
+    }
     let mut result = Vec::with_capacity(ctxs.len());
     for (i, ctx) in ctxs.iter().enumerate() {
         let cap = caps.get(i).map(|s| s.trim().to_string()).unwrap_or_default();
@@ -278,31 +290,53 @@ import sys, json, base64, urllib.request
 
 def main():
     req = json.load(sys.stdin)
-    url = req["url"].rstrip("/") + "/caption"
-    token = req.get("token") or ""
-    frames = []
+    # Detect the wire format. Moondream's hosted API at https://api.moondream.ai/v1/
+    # takes {"image_url": "data:image/jpeg;base64,..."} + length/stream and returns
+    # {"caption": "..."}. A self-hosted captioner (CLIPXD_CAPTION_URL pointing at your
+    # own /caption endpoint) takes {"prompt": "...", "frames": [{"b64": "..."}, ...]}.
+    is_moondream_cloud = "moondream.ai" in req["url"]
+    headers = {"content-type": "application/json"}
+    if req.get("token"):
+        if is_moondream_cloud:
+            headers["x-moondream-auth"] = req["token"]
+        else:
+            headers["authorization"] = "Bearer " + req["token"]
+    captions = []
     for f in req.get("frames", []):
-        b64 = ""
         p = f.get("path")
-        if p:
-            try:
-                with open(p, "rb") as fh:
-                    b64 = base64.b64encode(fh.read()).decode("ascii")
-            except Exception:
-                b64 = ""
-        frames.append({"b64": b64})
-    payload = json.dumps({"prompt": req.get("prompt") or "", "frames": frames}).encode()
-    r = urllib.request.Request(url, data=payload, headers={"content-type": "application/json"})
-    if token:
-        r.add_header("authorization", "Bearer " + token)
-    caps = []
-    try:
-        with urllib.request.urlopen(r, timeout=180) as resp:
-            caps = json.load(resp)
-    except Exception as e:
-        sys.stderr.write(str(e))
-        caps = []
-    print(json.dumps(caps if isinstance(caps, list) else []))
+        if not p:
+            continue
+        try:
+            with open(p, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode("ascii")
+        except Exception:
+            continue
+        if is_moondream_cloud:
+            payload = json.dumps({
+                "image_url": "data:image/jpeg;base64," + b64,
+                "length": "normal",
+                "stream": False,
+            }).encode()
+        else:
+            payload = json.dumps({
+                "prompt": req.get("prompt") or "",
+                "frames": [{"b64": b64}],
+            }).encode()
+        try:
+            req_obj = urllib.request.Request(req["url"], data=payload, headers=headers)
+            with urllib.request.urlopen(req_obj, timeout=180) as resp:
+                body = json.load(resp)
+            if is_moondream_cloud:
+                captions.append(body.get("caption") or "")
+            elif isinstance(body, list):
+                captions.append((body[0] if body else "") or "")
+            else:
+                # self-hosted /caption may return {"captions": [...]} or {"text": "..."}
+                captions.append(body.get("caption") or body.get("text") or "")
+        except Exception as e:
+            sys.stderr.write(str(e))
+            captions.append("")
+    print(json.dumps(captions))
 
 main()
 "#;
