@@ -295,7 +295,13 @@ def main():
     # {"caption": "..."}. A self-hosted captioner (CLIPXD_CAPTION_URL pointing at your
     # own /caption endpoint) takes {"prompt": "...", "frames": [{"b64": "..."}, ...]}.
     is_moondream_cloud = "moondream.ai" in req["url"]
-    headers = {"content-type": "application/json"}
+    headers = {
+        "content-type": "application/json",
+        # Cloudflare (which fronts api.moondream.ai) refuses requests without a browser-like
+        # User-Agent with error 1010 ("browser integrity check"). urllib's default
+        # "Python-urllib/3.x" is rejected. Use a Chrome UA which is the standard workaround.
+        "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    }
     if req.get("token"):
         if is_moondream_cloud:
             headers["x-moondream-auth"] = req["token"]
