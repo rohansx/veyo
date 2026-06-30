@@ -89,17 +89,11 @@ impl Enricher {
             None => Vec::new(),
         };
 
-        // 2. OCR every retained salient frame (failures are logged, not fatal —
-        //    a partial index beats no index).
-        let mut on_screen_text: Vec<OcrSpan> = Vec::new();
-        for f in input.frames {
-            match self.ocr.extract(&f.path, f.t_ms) {
-                Ok(spans) => on_screen_text.extend(spans),
-                Err(e) => {
-                    tracing::warn!(path = %f.path.display(), error = %e, "OCR failed for frame")
-                }
-            }
-        }
+        // 2. OCR every retained salient frame — batched so engines like PaddleOCR load their
+        //    model once for the whole clip, not once per frame (the main indexing-latency win).
+        //    Per-frame failures are skipped inside the batch, never fatal — a partial index beats none.
+        let ocr_frames: Vec<(std::path::PathBuf, _)> = input.frames.iter().map(|f| (f.path.clone(), f.t_ms)).collect();
+        let on_screen_text: Vec<OcrSpan> = self.ocr.extract_batch(&ocr_frames);
 
         // 3. visual timeline — caption every salient moment. Primary moments are veyo's deltas
         //    (they carry region + salience for zoom-aware captions); we ALSO caption any

@@ -5,8 +5,9 @@
 use crate::detect_binary;
 use crate::types::{OcrSpan, TextSource};
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use veyo_core::{Rect, TimeMs};
 
 /// Extracts on-screen text from a frame image.
@@ -14,6 +15,14 @@ pub trait Ocr: Send + Sync {
     /// OCR the image at `path`, stamping every span with `t_ms`.
     fn extract(&self, path: &Path, t_ms: TimeMs) -> Result<Vec<OcrSpan>>;
     fn name(&self) -> &'static str;
+
+    /// OCR many frames at once, returning all spans (each stamped with its frame's `t_ms`).
+    /// The default loops [`Self::extract`]; engines with heavy per-call startup (e.g. PaddleOCR
+    /// reloading its model) override this to load once and process the whole batch — the single
+    /// biggest win on indexing latency. Per-frame failures are skipped, not fatal.
+    fn extract_batch(&self, frames: &[(std::path::PathBuf, TimeMs)]) -> Vec<OcrSpan> {
+        frames.iter().flat_map(|(p, t)| self.extract(p, *t).unwrap_or_default()).collect()
+    }
 }
 
 /// No-op OCR — returns nothing. The default when no engine is available.
@@ -112,21 +121,27 @@ def to_py(x):
     # numpy arrays/scalars -> python lists/scalars (PaddleOCR 3.x returns np.ndarray)
     return x.tolist() if hasattr(x, "tolist") else x
 
-def run(path, lang):
-    out = []
+def build_ocr(lang):
     from paddleocr import PaddleOCR
-    ocr = None
-    # try 2.x kwargs first (use_angle_cls/show_log), fall through to 3.x-safe (lang only)
+    # Screen recordings are flat & upright — disable PP-OCRv5's doc-orientation, doc-unwarping,
+    # and textline-orientation preprocessors (3.x). That skips loading 3 extra models and a lot
+    # of per-frame work, the biggest OCR speedup. Fall back through older/safer kwarg sets.
     # enable_mkldnn=False avoids a paddle 3.x oneDNN CPU crash (ConvertPirAttribute2RuntimeAttribute)
-    for kw in ({"lang": lang, "enable_mkldnn": False},
+    for kw in ({"lang": lang, "use_doc_orientation_classify": False, "use_doc_unwarping": False, "use_textline_orientation": False, "enable_mkldnn": False},
+               {"lang": lang, "use_doc_orientation_classify": False, "use_doc_unwarping": False, "use_textline_orientation": False},
+               {"lang": lang, "enable_mkldnn": False},
                {"use_angle_cls": True, "lang": lang, "enable_mkldnn": False},
                {"use_angle_cls": True, "lang": lang, "show_log": False},
                {"use_angle_cls": True, "lang": lang},
                {"lang": lang}, {}):
         try:
-            ocr = PaddleOCR(**kw); break
+            return PaddleOCR(**kw)
         except Exception:
-            ocr = None
+            continue
+    return None
+
+def run(ocr, path):
+    out = []
     if ocr is None:
         return out
     res = None
@@ -201,9 +216,17 @@ def run(path, lang):
     return out
 
 try:
-    path = sys.argv[1]
-    lang = sys.argv[2] if len(sys.argv) > 2 else "en"
-    print(json.dumps(run(path, lang)))
+    if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+        # Batch mode: read {"paths":[...], "lang":"en"} on stdin, load the model ONCE, and
+        # OCR every frame — avoids the multi-second model reload per frame. Output: [[span,...], ...]
+        req = json.load(sys.stdin)
+        lang = req.get("lang") or "en"
+        ocr = build_ocr(lang)
+        print(json.dumps([run(ocr, p) for p in req.get("paths", [])]))
+    else:
+        path = sys.argv[1]
+        lang = sys.argv[2] if len(sys.argv) > 2 else "en"
+        print(json.dumps(run(build_ocr(lang), path)))
 except Exception as e:
     sys.stderr.write(str(e)); print("[]")
 "#;
@@ -255,6 +278,46 @@ impl Ocr for PaddleOcr {
     }
     fn name(&self) -> &'static str {
         "paddleocr"
+    }
+
+    /// One sidecar process for the whole batch — PaddleOCR's model loads once instead of per
+    /// frame (the dominant cost). Falls back to the per-frame default on any sidecar failure.
+    fn extract_batch(&self, frames: &[(std::path::PathBuf, TimeMs)]) -> Vec<OcrSpan> {
+        if frames.is_empty() {
+            return Vec::new();
+        }
+        let req = serde_json::json!({
+            "lang": self.lang,
+            "paths": frames.iter().map(|(p, _)| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+        })
+        .to_string();
+
+        let parsed: Option<Vec<serde_json::Value>> = (|| {
+            let mut child = Command::new(&self.python)
+                .arg(&self.script)
+                .arg("--batch")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .ok()?;
+            child.stdin.take()?.write_all(req.as_bytes()).ok()?;
+            let out = child.wait_with_output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout).ok()
+        })();
+
+        match parsed {
+            Some(per_frame) if per_frame.len() == frames.len() => per_frame
+                .into_iter()
+                .zip(frames.iter())
+                .flat_map(|(spans, (_, t))| parse_paddle_json(&spans.to_string(), *t, self.min_confidence))
+                .collect(),
+            // sidecar unavailable or shape mismatch → safe per-frame fallback
+            _ => frames.iter().flat_map(|(p, t)| self.extract(p, *t).unwrap_or_default()).collect(),
+        }
     }
 }
 
