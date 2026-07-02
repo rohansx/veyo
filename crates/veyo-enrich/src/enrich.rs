@@ -8,7 +8,7 @@
 //!    attaching the closest retained frame → `visual_timeline`
 
 use crate::caption::{Captioner, HeuristicCaptioner, MoondreamCaptioner, OpenRouterCaptioner, RemoteCaptioner};
-use crate::ocr::{NullOcr, Ocr, PaddleOcr, TesseractCliOcr};
+use crate::ocr::{NullOcr, OarOcr, Ocr, PaddleOcr, TesseractCliOcr};
 use crate::transcribe::{NullTranscriber, Transcriber};
 use crate::types::{CaptionContext, EnrichedMoment, Enrichment, OcrSpan, SalientFrame};
 use anyhow::Result;
@@ -51,7 +51,13 @@ impl Enricher {
     /// `paddleocr` is importable, else falls back to the system `tesseract`, else null; plus
     /// the heuristic captioner and a null transcriber (no audio model assumed).
     pub fn with_local_defaults() -> Self {
-        let ocr: Box<dyn Ocr> = if let Some(p) = PaddleOcr::detect() {
+        // oar-ocr first: same PP-OCRv6 models as PaddleOcr, but in-process via ONNX Runtime —
+        // no Python venv, no subprocess spawn per clip, no MKLDNN-disabled CPU penalty.
+        // PaddleOcr/tesseract remain fallbacks for environments where the ONNX build fails
+        // (e.g. no prebuilt onnxruntime for the target — see the musl note on OarOcr::detect).
+        let ocr: Box<dyn Ocr> = if let Some(o) = OarOcr::detect() {
+            Box::new(o)
+        } else if let Some(p) = PaddleOcr::detect() {
             Box::new(p)
         } else if let Some(t) = TesseractCliOcr::detect() {
             Box::new(t)

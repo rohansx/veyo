@@ -20,7 +20,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"          # open-core: permissive core daemon + schema
 repository = "https://github.com/rohansx/veyo"
-rust-version = "1.80"
+rust-version = "1.95"  # oar-ocr 0.7+ (Rust-native OCR, replaces the PaddleOCR Python sidecar) needs it
 
 # Shared dependency versions, pinned. Verified against crates.io at scaffold time.
 [workspace.dependencies]

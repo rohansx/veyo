@@ -321,6 +321,131 @@ impl Ocr for PaddleOcr {
     }
 }
 
+/// Rust-native OCR via [`oar-ocr`](https://github.com/GreatV/oar-ocr) — the same PP-OCRv6
+/// models as [`PaddleOcr`], run in-process through ONNX Runtime instead of a Python
+/// subprocess. No venv, no per-call process spawn, no `enable_mkldnn=False` workaround (that
+/// flag exists to dodge a PaddlePaddle 3.x oneDNN crash — `ort`'s own CPU execution provider
+/// doesn't share it). Preferred over `PaddleOcr` when it builds successfully.
+///
+/// The `OAROCR` pipeline is expensive to construct (loads two ONNX sessions) but cheap to
+/// reuse, so it's built **once per process** behind a `OnceLock` — `detect()` returns a
+/// lightweight handle to that shared instance, not a fresh build every call. Models
+/// auto-download to `$OAR_HOME` (default `~/.oar`) on first use, mirroring PaddleOCR's
+/// `~/.paddlex` auto-download UX.
+#[derive(Clone)]
+pub struct OarOcr {
+    pipeline: std::sync::Arc<oar_ocr::oarocr::OAROCR>,
+    min_confidence: f32,
+}
+
+fn oar_pipeline() -> &'static std::sync::OnceLock<Option<std::sync::Arc<oar_ocr::oarocr::OAROCR>>> {
+    static PIPELINE: std::sync::OnceLock<Option<std::sync::Arc<oar_ocr::oarocr::OAROCR>>> = std::sync::OnceLock::new();
+    &PIPELINE
+}
+
+impl OarOcr {
+    /// Builds (once per process; cached thereafter) the PP-OCRv6 "medium" pipeline —
+    /// det+rec accuracy comparable to PaddleOCR's server models. `None` on any build failure
+    /// (e.g. no network for the first-run model download, or `ort` failing to load an ONNX
+    /// Runtime backend for this platform), so the caller falls back to `PaddleOcr`/tesseract.
+    pub fn detect() -> Option<Self> {
+        let pipeline = oar_pipeline()
+            .get_or_init(|| {
+                oar_ocr::prelude::OAROCRBuilder::new("pp-ocrv6_medium_det.onnx", "pp-ocrv6_medium_rec.onnx", "ppocrv6_dict.txt")
+                    .build()
+                    .map(std::sync::Arc::new)
+                    .map_err(|e| eprintln!("oar-ocr: pipeline build failed, falling back: {e}"))
+                    .ok()
+            })
+            .clone()?;
+        Some(Self { pipeline, min_confidence: 50.0 })
+    }
+
+    fn spans_from_result(result: &oar_ocr::oarocr::OAROCRResult, t_ms: TimeMs, min_confidence: f32) -> Vec<OcrSpan> {
+        result
+            .text_regions
+            .iter()
+            .filter_map(|region| {
+                let (text, confidence) = region.text_with_confidence()?;
+                let text = text.trim();
+                let conf_pct = confidence * 100.0;
+                if text.is_empty() || conf_pct < min_confidence {
+                    return None;
+                }
+                Some(OcrSpan {
+                    t_ms,
+                    text: text.to_string(),
+                    source: TextSource::Ocr,
+                    bbox: axis_aligned_bbox(&region.bounding_box),
+                    confidence: Some(conf_pct),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Reduce oar-ocr's (possibly rotated) polygon to the axis-aligned `Rect` the index schema
+/// wants — min/max over the polygon's points.
+fn axis_aligned_bbox(b: &oar_ocr::processors::BoundingBox) -> Option<Rect> {
+    if b.points.is_empty() {
+        return None;
+    }
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for p in &b.points {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    Some(Rect { x: min_x.round() as i32, y: min_y.round() as i32, w: (max_x - min_x).round() as i32, h: (max_y - min_y).round() as i32 })
+}
+
+impl Ocr for OarOcr {
+    fn extract(&self, path: &Path, t_ms: TimeMs) -> Result<Vec<OcrSpan>> {
+        let img = oar_ocr::prelude::load_image(path).with_context(|| format!("oar-ocr: loading {}", path.display()))?;
+        let results = self.pipeline.predict(vec![img]).map_err(|e| anyhow::anyhow!("oar-ocr predict: {e}"))?;
+        Ok(results.first().map(|r| Self::spans_from_result(r, t_ms, self.min_confidence)).unwrap_or_default())
+    }
+
+    fn name(&self) -> &'static str {
+        "oar-ocr"
+    }
+
+    /// One `predict()` call across every frame — oar-ocr batches detection+recognition
+    /// internally (see `image_batch_size`), so this amortizes ONNX Runtime call overhead the
+    /// same way `PaddleOcr::extract_batch` amortizes its subprocess's model load.
+    fn extract_batch(&self, frames: &[(std::path::PathBuf, TimeMs)]) -> Vec<OcrSpan> {
+        if frames.is_empty() {
+            return Vec::new();
+        }
+        let loaded: Vec<(image::RgbImage, TimeMs)> = frames
+            .iter()
+            .filter_map(|(p, t)| match oar_ocr::prelude::load_image(p) {
+                Ok(img) => Some((img, *t)),
+                Err(e) => {
+                    eprintln!("oar-ocr: skipping unreadable frame {}: {e}", p.display());
+                    None
+                }
+            })
+            .collect();
+        if loaded.is_empty() {
+            return Vec::new();
+        }
+        let (images, times): (Vec<_>, Vec<_>) = loaded.into_iter().unzip();
+        match self.pipeline.predict(images) {
+            Ok(results) => results
+                .iter()
+                .zip(times.iter())
+                .flat_map(|(r, t)| Self::spans_from_result(r, *t, self.min_confidence))
+                .collect(),
+            Err(e) => {
+                eprintln!("oar-ocr: batch predict failed: {e}");
+                Vec::new()
+            }
+        }
+    }
+}
+
 /// Parse the sidecar's JSON contract into [`OcrSpan`]s. Confidence is normalized to `0..=100`
 /// (PaddleOCR reports `0..1`). Pure and unit-tested.
 pub fn parse_paddle_json(json: &str, t_ms: TimeMs, min_conf: f32) -> Vec<OcrSpan> {
