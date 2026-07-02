@@ -286,7 +286,8 @@ pub struct RemoteCaptioner {
 }
 
 const REMOTE_SIDECAR: &str = r#"
-import sys, json, base64, urllib.request
+import sys, json, base64, time, urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 def main():
     req = json.load(sys.stdin)
@@ -307,16 +308,22 @@ def main():
             headers["x-moondream-auth"] = req["token"]
         else:
             headers["authorization"] = "Bearer " + req["token"]
-    captions = []
-    for f in req.get("frames", []):
+
+    def encode(f):
         p = f.get("path")
         if not p:
-            continue
+            return None
         try:
             with open(p, "rb") as fh:
-                b64 = base64.b64encode(fh.read()).decode("ascii")
+                return base64.b64encode(fh.read()).decode("ascii")
         except Exception:
-            continue
+            return None
+
+    def fetch(b64):
+        # One caption per call; "" on any failure so the output array stays aligned with
+        # the input frames (the Rust side substitutes the heuristic caption per empty slot).
+        if b64 is None:
+            return ""
         if is_moondream_cloud:
             payload = json.dumps({
                 "image_url": "data:image/jpeg;base64," + b64,
@@ -328,20 +335,29 @@ def main():
                 "prompt": req.get("prompt") or "",
                 "frames": [{"b64": b64}],
             }).encode()
-        try:
-            req_obj = urllib.request.Request(req["url"], data=payload, headers=headers)
-            with urllib.request.urlopen(req_obj, timeout=180) as resp:
-                body = json.load(resp)
-            if is_moondream_cloud:
-                captions.append(body.get("caption") or "")
-            elif isinstance(body, list):
-                captions.append((body[0] if body else "") or "")
-            else:
+        for attempt in (0, 1):
+            try:
+                req_obj = urllib.request.Request(req["url"], data=payload, headers=headers)
+                with urllib.request.urlopen(req_obj, timeout=180) as resp:
+                    body = json.load(resp)
+                if is_moondream_cloud:
+                    return body.get("caption") or ""
+                if isinstance(body, list):
+                    return (body[0] if body else "") or ""
                 # self-hosted /caption may return {"captions": [...]} or {"text": "..."}
-                captions.append(body.get("caption") or body.get("text") or "")
-        except Exception as e:
-            sys.stderr.write(str(e))
-            captions.append("")
+                return body.get("caption") or body.get("text") or ""
+            except Exception as e:
+                sys.stderr.write(str(e))
+                if attempt == 0:
+                    time.sleep(1.0)  # one retry: transient Cloudflare/network blips
+        return ""
+
+    # Wall-clock for a clip's captions used to be N_frames x round-trip because every frame
+    # was a fresh, serial urllib call. Fan the calls out instead; ex.map preserves order.
+    frames = [encode(f) for f in req.get("frames", [])]
+    workers = max(1, min(int(req.get("concurrency") or 4), 16))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        captions = list(ex.map(fetch, frames))
     print(json.dumps(captions))
 
 main()
@@ -374,10 +390,20 @@ impl Captioner for RemoteCaptioner {
     }
 
     fn caption_batch(&self, ctxs: &[CaptionContext]) -> Result<Vec<String>> {
+        // Concurrent fan-out inside the sidecar. Default 4 in-flight requests: Moondream
+        // Cloud's free tier is rate-limited to 2 req/s (10 req/s paid) and the Modal
+        // self-hosted server allows 4 concurrent inputs — override with
+        // CLIPXD_CAPTION_CONCURRENCY to match your tier.
+        let concurrency = std::env::var("CLIPXD_CAPTION_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&c| c >= 1)
+            .unwrap_or(4);
         let req = serde_json::json!({
             "url": self.url,
             "token": self.token,
             "prompt": self.prompt,
+            "concurrency": concurrency,
             "frames": frame_payload(ctxs),
         })
         .to_string();
